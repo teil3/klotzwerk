@@ -31,20 +31,20 @@ Then open `http://localhost:8000/`.
 
 ## Embedding
 
-Klotzwerk has no build step. To embed it in another page, copy the script-tag sequence and markup scaffold from `index.html` — the load order matters (three.js and its controls first, then the `src/*.js` modules).
+Klotzwerk has no build step. To embed it in another page, copy the script-tag sequence and markup scaffold from `index.html` — the load order matters (three.js and its controls first, then the `src/*.js` modules). All script tags need `defer`: `src/ui.js` wires up the DOM (`document.currentScript`, button listeners) and relies on `defer` preserving load order while letting the page parse first.
 
 ```html
-<script src="vendor/three.js-r124/three.min.js"></script>
-<script src="vendor/three.js-r124/controls/OrbitControls.js"></script>
-<script src="vendor/three.js-r124/controls/TransformControls.js"></script>
-<script src="src/dokument.js"></script>
-<script src="src/flaechen.js"></script>
-<script src="src/historie.js"></script>
-<script src="src/assets.js"></script>
-<script src="src/io.js"></script>
-<script src="src/navwuerfel.js"></script>
-<script src="src/viewport.js"></script>
-<script src="src/ui.js"></script>
+<script src="vendor/three.js-r124/three.min.js" defer></script>
+<script src="vendor/three.js-r124/controls/OrbitControls.js" defer></script>
+<script src="vendor/three.js-r124/controls/TransformControls.js" defer></script>
+<script src="src/dokument.js" defer></script>
+<script src="src/flaechen.js" defer></script>
+<script src="src/historie.js" defer></script>
+<script src="src/assets.js" defer></script>
+<script src="src/io.js" defer></script>
+<script src="src/navwuerfel.js" defer></script>
+<script src="src/viewport.js" defer></script>
+<script src="src/ui.js" defer></script>
 ```
 
 ### Public API
