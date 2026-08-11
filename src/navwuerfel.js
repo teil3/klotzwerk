@@ -255,5 +255,5 @@
     return { sync: sync, setzeKamera: setzeKamera };
   }
 
-  window.T3KNavWuerfel = { initNavWuerfel: initNavWuerfel };
+  window.KlotzwerkNavWuerfel = { initNavWuerfel: initNavWuerfel };
 })();

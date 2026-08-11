@@ -426,7 +426,7 @@
     }
 
     // Navigationswuerfel oben links im Viewport-Container
-    var navWuerfel = window.T3KNavWuerfel && window.T3KNavWuerfel.initNavWuerfel(container, kamera, {
+    var navWuerfel = window.KlotzwerkNavWuerfel && window.KlotzwerkNavWuerfel.initNavWuerfel(container, kamera, {
       beiAnsicht: function (richtung) { flieheZuAnsicht(richtung); },
       beiAnsichtVektor: function (vektor) { flieheZuVektor(vektor); },
       beiDrehen: function (deltaAzimut, deltaPolar) { dreheUmZiel(deltaAzimut, deltaPolar); }
@@ -1043,7 +1043,7 @@
       var erg = null;
       if (mesh) {
         mesh.updateMatrixWorld();
-        erg = window.T3KFlaechen.findeFlaechen(
+        erg = window.KlotzwerkFlaechen.findeFlaechen(
           mesh.geometry.attributes.position.array,
           mesh.geometry.index.array,
           mesh.matrixWorld.elements
@@ -1144,9 +1144,9 @@
       };
       var neu = null;
       if (anlegen.hoverFlaeche) {
-        neu = window.T3KFlaechen.berechneAnlegeTransform(transformAlt, anlegen.flaecheA, anlegen.hoverFlaeche);
+        neu = window.KlotzwerkFlaechen.berechneAnlegeTransform(transformAlt, anlegen.flaecheA, anlegen.hoverFlaeche);
       } else if (anlegen.platteHover) {
-        neu = window.T3KFlaechen.berechnePlattenTransform(transformAlt, anlegen.flaecheA,
+        neu = window.KlotzwerkFlaechen.berechnePlattenTransform(transformAlt, anlegen.flaecheA,
           mesh.geometry.attributes.position.array);
       }
       if (!neu) return;   // Klick ins Leere: Modus bleibt aktiv
@@ -1236,7 +1236,7 @@
       var erg = null;
       if (mesh) {
         mesh.updateMatrixWorld();
-        erg = window.T3KFlaechen.findeFlaechen(
+        erg = window.KlotzwerkFlaechen.findeFlaechen(
           mesh.geometry.attributes.position.array,
           mesh.geometry.index.array,
           mesh.matrixWorld.elements
@@ -1524,5 +1524,5 @@
     return vp;
   }
 
-  window.T3KViewport = { initViewport: initViewport };
+  window.KlotzwerkViewport = { initViewport: initViewport };
 })();

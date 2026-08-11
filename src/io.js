@@ -1,13 +1,14 @@
 /*
  * Ein-/Ausgabe des 3D-Konstruktors: binaerer STL-Writer, Datei-Download,
  * Warenkorb-Uebergabe (Muster stl-reduzieren.js) und Autosave in localStorage.
- * Browser: window.T3KIO, Node (nur STL-Writer): require().
+ * Browser: window.KlotzwerkIO, Node (nur STL-Writer): require().
  */
 (function () {
   'use strict';
 
   var UPLOAD_URL = '3d-dateien-hochladen-und-3d-drucken-lassen.html';
-  var AUTOSAVE_SCHLUESSEL = 't3.3dkonstruktor.autosave';
+  var AUTOSAVE_SCHLUESSEL = 'klotzwerk.autosave';
+  var AUTOSAVE_SCHLUESSEL_ALT = 't3.3dkonstruktor.autosave'; // teil3.ch-Altbestand
 
   function baueBinaerSTL(vertProperties, triVerts) {
     var n = triVerts.length / 3;
@@ -692,7 +693,16 @@
   }
 
   function ladeAutosave() {
-    try { return window.localStorage.getItem(AUTOSAVE_SCHLUESSEL); }
+    try {
+      var wert = window.localStorage.getItem(AUTOSAVE_SCHLUESSEL);
+      if (wert === null) {
+        wert = window.localStorage.getItem(AUTOSAVE_SCHLUESSEL_ALT);
+        if (wert !== null) {
+          try { window.localStorage.setItem(AUTOSAVE_SCHLUESSEL, wert); window.localStorage.removeItem(AUTOSAVE_SCHLUESSEL_ALT); } catch (e) { }
+        }
+      }
+      return wert;
+    }
     catch (e) { return null; }
   }
 
@@ -841,5 +851,5 @@
   };
 
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
-  else { window.T3KIO = api; }
+  else { window.KlotzwerkIO = api; }
 })();

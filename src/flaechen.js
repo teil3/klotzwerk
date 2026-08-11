@@ -1,6 +1,6 @@
 /*
  * Flaechenerkennung + Anlege-Mathematik des 3D-Konstruktors.
- * Reine Geometrie, kein three.js. Browser: window.T3KFlaechen, Node: require.
+ * Reine Geometrie, kein three.js. Browser: window.KlotzwerkFlaechen, Node: require.
  *
  * findeFlaechen clustert koplanare Dreiecke (Nachbarschaft NICHT noetig --
  * der Ring-Abschluss eines Rohrs ist EINE Flaeche). Wie bei Bambu Studio
@@ -9,13 +9,13 @@
  * Regionen mit glatten Randkanten weg -- das machte Flaechen mit tangential
  * anschliessender Kantenrundung unanwaehlbar.
  * Alle Ein-/Ausgaben in Weltkoordinaten (matrixWelt column-major wie
- * T3KDokument.matAusTransform).
+ * KlotzwerkDokument.matAusTransform).
  */
 (function () {
   'use strict';
 
   var D = (typeof module !== 'undefined' && module.exports)
-    ? require('./dokument.js') : window.T3KDokument;
+    ? require('./dokument.js') : window.KlotzwerkDokument;
 
   var NORMALE_GRAD = 1;    // Koplanaritaet: Normalen-Abweichung in Grad
   var OFFSET_MM = 0.1;     // Koplanaritaet: Ebenen-Abstand in mm
@@ -254,5 +254,5 @@
   };
 
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
-  else { window.T3KFlaechen = api; }
+  else { window.KlotzwerkFlaechen = api; }
 })();

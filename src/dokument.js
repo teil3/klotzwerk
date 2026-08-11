@@ -1,6 +1,6 @@
 /*
  * Datenmodell des 3D-Konstruktors: reine Daten, kein three.js.
- * Browser haengt an window.T3KDokument, Node testet via require().
+ * Browser haengt an window.KlotzwerkDokument, Node testet via require().
  * Transform-Konvention wie three.js: Euler 'XYZ' in Grad, Matrix column-major,
  * Komposition T * R * S. Die CSG-Seite nutzt DIESELBEN Matrizen (csg-kern.js),
  * damit Anzeige und Verrechnung nie auseinanderlaufen.
@@ -286,5 +286,5 @@
   };
 
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
-  else { window.T3KDokument = api; }
+  else { window.KlotzwerkDokument = api; }
 })();

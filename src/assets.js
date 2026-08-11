@@ -7,7 +7,8 @@
 (function () {
   'use strict';
 
-  var DB_NAME = 't3-3dkonstruktor';
+  var DB_NAME = 'klotzwerk';
+  var DB_NAME_ALT = 't3-3dkonstruktor'; // teil3.ch-Altbestand
   var STORE = 'assets';
 
   var speicher = {};   // assetId -> {vertProperties, triVerts, wasserdicht, name}
@@ -23,11 +24,42 @@
   function loescheAlle() { speicher = {}; naechste = 1; }
   function loesche(id) { delete speicher[id]; }
 
+  function migriereAlteDb(neueDb, fertig) {
+    var req = window.indexedDB.open(DB_NAME_ALT, 1);
+    req.onerror = function () { fertig(); };
+    req.onsuccess = function () {
+      var alteDb = req.result;
+      if (!alteDb.objectStoreNames.contains(STORE)) { alteDb.close(); fertig(); return; }
+      var lesen = alteDb.transaction(STORE, 'readonly').objectStore(STORE).getAll();
+      var schluessel = alteDb.transaction(STORE, 'readonly').objectStore(STORE).getAllKeys();
+      lesen.onsuccess = function () {
+        schluessel.onsuccess = function () {
+          var tx = neueDb.transaction(STORE, 'readwrite');
+          lesen.result.forEach(function (wert, i) { tx.objectStore(STORE).put(wert, schluessel.result[i]); });
+          tx.oncomplete = function () { alteDb.close(); window.indexedDB.deleteDatabase(DB_NAME_ALT); fertig(); };
+          tx.onerror = function () { alteDb.close(); fertig(); };
+        };
+        schluessel.onerror = function () { alteDb.close(); fertig(); };
+      };
+      lesen.onerror = function () { alteDb.close(); fertig(); };
+    };
+  }
+
   function oeffneDb() {
     return new Promise(function (resolve, reject) {
       var req = window.indexedDB.open(DB_NAME, 1);
       req.onupgradeneeded = function () { req.result.createObjectStore(STORE); };
-      req.onsuccess = function () { resolve(req.result); };
+      req.onsuccess = function () {
+        var db = req.result;
+        try {
+          var pruefen = db.transaction(STORE, 'readonly').objectStore(STORE).getAllKeys();
+          pruefen.onsuccess = function () {
+            if (pruefen.result && pruefen.result.length > 0) { resolve(db); return; }
+            migriereAlteDb(db, function () { resolve(db); });
+          };
+          pruefen.onerror = function () { resolve(db); };
+        } catch (e) { resolve(db); }
+      };
       req.onerror = function () { reject(req.error || new Error('Speicher nicht verfügbar')); };
     });
   }
@@ -76,5 +108,5 @@
   };
 
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
-  else { window.T3KAssets = api; }
+  else { window.KlotzwerkAssets = api; }
 })();

@@ -1,6 +1,6 @@
 /*
  * Undo/Redo ueber tiefe JSON-Snapshots des Dokuments (reine Daten).
- * Browser: window.T3KHistorie, Node: require().
+ * Browser: window.KlotzwerkHistorie, Node: require().
  */
 (function () {
   'use strict';
@@ -44,5 +44,5 @@
   };
 
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
-  else { window.T3KHistorie = api; }
+  else { window.KlotzwerkHistorie = api; }
 })();

@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  var D = window.T3KDokument, H = window.T3KHistorie, IO = window.T3KIO;
+  var D = window.KlotzwerkDokument, H = window.KlotzwerkHistorie, IO = window.KlotzwerkIO;
 
   var KANAL_DURCHMESSER = 3;   // Standard-Lochdurchmesser des Entleerungskanals in mm
 
@@ -66,14 +66,14 @@
           // IndexedDB-Daten, sync- oder async-Wurf) darf nicht die ganze
           // Kette (und damit die Palette) lahmlegen -- betroffenes Asset
           // wird stattdessen aus dem Store entfernt und zaehlt als fehlend.
-          return Promise.all(window.T3KAssets.alleIds().map(function (id) {
-            var daten = window.T3KAssets.hole(id);
+          return Promise.all(window.KlotzwerkAssets.alleIds().map(function (id) {
+            var daten = window.KlotzwerkAssets.hole(id);
             var p;
             try { p = frageAsset(id, daten); }
             catch (err) { p = Promise.reject(err); }
             return p.catch(function () {
-              window.T3KAssets.loesche(id);
-              window.T3KAssets.loescheInDb(id).catch(function () { });
+              window.KlotzwerkAssets.loesche(id);
+              window.KlotzwerkAssets.loescheInDb(id).catch(function () { });
             });
           }));
         }).then(function () {
@@ -150,7 +150,7 @@
   function frageMesh(knoten) {
     if (knoten.typ === 'import') {
       // Import-Geometrie liegt fertig im Asset-Store; kein Worker-Umweg.
-      var asset = window.T3KAssets.hole(knoten.params.assetId);
+      var asset = window.KlotzwerkAssets.hole(knoten.params.assetId);
       if (!asset) return Promise.resolve(null);
       // Kopien: BufferAttribute uebernimmt die Arrays
       return Promise.resolve({ vertProperties: asset.vertProperties.slice(), triVerts: asset.triVerts.slice() });
@@ -307,7 +307,7 @@
 
     // Assets aus IndexedDB laden; Import-Knoten ohne Asset (z.B. Speicher
     // geleert) fliegen raus, bevor gezeichnet wird.
-    zustand.assetsGeladen = window.T3KAssets.ladeAlleAusDb()
+    zustand.assetsGeladen = window.KlotzwerkAssets.ladeAlleAusDb()
       .catch(function () { })
       .then(function () {
         var entfernt = entferneVerwaisteImporte(zustand.dok.objekte);
@@ -317,7 +317,7 @@
         }
       });
 
-    zustand.viewport = window.T3KViewport.initViewport($('k3d-viewport'), {
+    zustand.viewport = window.KlotzwerkViewport.initViewport($('k3d-viewport'), {
       beiAuswahl: function (ids) { setzeAuswahl(ids, 'viewport'); },
       beiTransformEnde: function (id, transform) {
         if (id === '__schnittebene') { if (zustand.schnitt || zustand.strecken) zeichnePanel(); return; }
@@ -438,7 +438,7 @@
 
     $('btn-projekt-speichern').addEventListener('click', function () {
       if (zustand.dok.objekte.length === 0) { setStatus('Noch nichts zu sichern.', true); return; }
-      IO.downloadText(IO.exportiereProjekt(zustand.dok, window.T3KAssets.hole), 'teil3-projekt.json');
+      IO.downloadText(IO.exportiereProjekt(zustand.dok, window.KlotzwerkAssets.hole), 'teil3-projekt.json');
       setStatus('Projekt als Datei gesichert.');
     });
 
@@ -692,7 +692,7 @@
     var entfernt = 0;
     for (var i = liste.length - 1; i >= 0; i--) {
       var k = liste[i];
-      if (k.typ === 'import' && !window.T3KAssets.hole(k.params.assetId)) { liste.splice(i, 1); entfernt++; }
+      if (k.typ === 'import' && !window.KlotzwerkAssets.hole(k.params.assetId)) { liste.splice(i, 1); entfernt++; }
       else if (k.typ === 'gruppe') entfernt += entferneVerwaisteImporte(k.kinder);
     }
     return entfernt;
@@ -706,10 +706,10 @@
   function entferneVerwaisteAssets() {
     var referenziert = {};
     IO.sammleAssetIds(zustand.dok).forEach(function (id) { referenziert[id] = true; });
-    window.T3KAssets.alleIds().forEach(function (id) {
+    window.KlotzwerkAssets.alleIds().forEach(function (id) {
       if (!referenziert[id]) {
-        window.T3KAssets.loesche(id);
-        window.T3KAssets.loescheInDb(id).catch(function () { });
+        window.KlotzwerkAssets.loesche(id);
+        window.KlotzwerkAssets.loescheInDb(id).catch(function () { });
       }
     });
   }
@@ -725,12 +725,12 @@
       var daten;
       try { daten = IO.parseSTL(e.target.result); }
       catch (err) { setStatus('«' + file.name + '» konnte nicht gelesen werden: ' + err.message, true); return; }
-      var assetId = window.T3KAssets.neueAssetId();
+      var assetId = window.KlotzwerkAssets.neueAssetId();
       var eintrag = { name: file.name, vertProperties: daten.vertProperties, triVerts: daten.triVerts, wasserdicht: false };
       frageAsset(assetId, eintrag).then(function (erg) {
         eintrag.wasserdicht = erg.wasserdicht;
-        window.T3KAssets.registriere(assetId, eintrag);
-        window.T3KAssets.speichereInDb(assetId).catch(function () {
+        window.KlotzwerkAssets.registriere(assetId, eintrag);
+        window.KlotzwerkAssets.speichereInDb(assetId).catch(function () {
           setStatus('Browser-Speicher voll — das Modell ist geladen, überlebt aber kein Neuladen. Sichere dein Projekt als Datei.', true);
         });
         var k = D.neuerImport(zustand.dok, file.name, assetId, erg.dreiecke, erg.wasserdicht);
@@ -757,13 +757,13 @@
   function importiereTeileListe(dateiName, teile, hinweis) {
     var quotaGemeldet = false;
     return Promise.all(teile.map(function (teil, i) {
-      var assetId = window.T3KAssets.neueAssetId();
+      var assetId = window.KlotzwerkAssets.neueAssetId();
       var name = teil.name || (dateiName + (teile.length > 1 ? ' (' + (i + 1) + ')' : ''));
       var eintrag = { name: name, vertProperties: teil.vertProperties, triVerts: teil.triVerts, wasserdicht: false };
       return frageAsset(assetId, eintrag).then(function (erg) {
         eintrag.wasserdicht = erg.wasserdicht;
-        window.T3KAssets.registriere(assetId, eintrag);
-        window.T3KAssets.speichereInDb(assetId).catch(function () {
+        window.KlotzwerkAssets.registriere(assetId, eintrag);
+        window.KlotzwerkAssets.speichereInDb(assetId).catch(function () {
           if (!quotaGemeldet) {
             quotaGemeldet = true;
             setStatus('Browser-Speicher voll — das Modell ist geladen, überlebt aber kein Neuladen. Sichere dein Projekt als Datei.', true);
@@ -850,13 +850,13 @@
         return;
       }
       if (zustand.dok.objekte.length > 0 && !window.confirm('Aktuelles Projekt ersetzen?')) return;
-      window.T3KAssets.loescheAlle();
-      window.T3KAssets.loescheDb().catch(function () { });
+      window.KlotzwerkAssets.loescheAlle();
+      window.KlotzwerkAssets.loescheDb().catch(function () { });
       zustand.worker.postMessage({ befehl: 'assetsLoeschen' });
       var quotaGemeldet = false;
       Object.keys(projekt.assets).forEach(function (id) {
-        window.T3KAssets.registriere(id, projekt.assets[id]);
-        window.T3KAssets.speichereInDb(id).catch(function () {
+        window.KlotzwerkAssets.registriere(id, projekt.assets[id]);
+        window.KlotzwerkAssets.speichereInDb(id).catch(function () {
           if (!quotaGemeldet) {
             quotaGemeldet = true;
             setStatus('Browser-Speicher voll — das Projekt ist geladen, überlebt aber kein Neuladen.', true);
@@ -874,8 +874,8 @@
       setzeAuswahl([]);
       zustand.viewport.versteckeSchnittebene();
       zustand.viewport.leereTransparenz();
-      Promise.all(window.T3KAssets.alleIds().map(function (id) {
-        return frageAsset(id, window.T3KAssets.hole(id));
+      Promise.all(window.KlotzwerkAssets.alleIds().map(function (id) {
+        return frageAsset(id, window.KlotzwerkAssets.hole(id));
       })).then(function () {
         zeichneAlles();
         aktualisiereWerkzeugleiste();
@@ -924,11 +924,11 @@
       var zentriert = IO.transformiereVertices(t.vertProperties, D.matAusTransform({
         position: [-mitte[0], -mitte[1], -mitte[2]], rotation: [0, 0, 0], skalierung: [1, 1, 1]
       }));
-      var assetId = window.T3KAssets.neueAssetId();
+      var assetId = window.KlotzwerkAssets.neueAssetId();
       var name = knoten.name + ' (Teil ' + (i + 1) + ')';
       var wasserdicht = t.wasserdicht !== false;
       var eintrag = { name: name, vertProperties: zentriert, triVerts: t.triVerts, wasserdicht: wasserdicht };
-      window.T3KAssets.registriere(assetId, eintrag);
+      window.KlotzwerkAssets.registriere(assetId, eintrag);
       // Auch im Worker registrieren, sonst kennt die dortige Asset-Registry
       // das Teil nicht und Gruppieren/Export werfen "Importiertes Modell
       // nicht gefunden" (frageAsset kopiert die Arrays selbst per slice;
@@ -937,7 +937,7 @@
       frageAsset(assetId, eintrag).catch(function () {
         setStatus('Teil konnte nicht für die Verrechnung registriert werden.', true);
       });
-      window.T3KAssets.speichereInDb(assetId).catch(function () {
+      window.KlotzwerkAssets.speichereInDb(assetId).catch(function () {
         if (!quotaGemeldet) {
           quotaGemeldet = true;
           setStatus('Browser-Speicher voll — die Teile sind da, überleben aber kein Neuladen. Sichere dein Projekt als Datei.', true);
@@ -1140,16 +1140,16 @@
     var zentriert = IO.transformiereVertices(t.vertProperties, D.matAusTransform({
       position: [-mitte[0], -mitte[1], -mitte[2]], rotation: [0, 0, 0], skalierung: [1, 1, 1]
     }));
-    var assetId = window.T3KAssets.neueAssetId();
+    var assetId = window.KlotzwerkAssets.neueAssetId();
     var eintrag = { name: name, vertProperties: zentriert, triVerts: t.triVerts, wasserdicht: true };
-    window.T3KAssets.registriere(assetId, eintrag);
+    window.KlotzwerkAssets.registriere(assetId, eintrag);
     // Auch im Worker registrieren, sonst kennt die dortige Asset-Registry
     // das Ergebnis nicht und Gruppieren/Export werfen "Importiertes Modell
     // nicht gefunden" (frageAsset kopiert die Arrays selbst per slice).
     frageAsset(assetId, eintrag).catch(function () {
       setStatus('Ergebnis konnte nicht für die Verrechnung registriert werden.', true);
     });
-    window.T3KAssets.speichereInDb(assetId).catch(function () {
+    window.KlotzwerkAssets.speichereInDb(assetId).catch(function () {
       setStatus('Browser-Speicher voll — das Ergebnis ist da, überlebt aber kein Neuladen. Sichere dein Projekt als Datei.', true);
     });
     var k = D.neuerImport(zustand.dok, name, assetId, t.triVerts.length / 3, true);
@@ -1740,7 +1740,7 @@
     // Import: BBox aus dem Asset; Gruppe: BBox des gemergten Meshes im Viewport.
     var basis = null;
     if (k.typ === 'import') {
-      var asset = window.T3KAssets.hole(k.params.assetId);
+      var asset = window.KlotzwerkAssets.hole(k.params.assetId);
       if (asset) basis = IO.bboxGroesse(asset.vertProperties);
     } else if (k.typ === 'gruppe') {
       basis = zustand.viewport.holeBasisGroesse(k.id);
@@ -1857,7 +1857,7 @@
     var fertig = function (csgDaten) {
       var teile = csgDaten ? [csgDaten] : [];
       roh.forEach(function (k) {
-        var asset = window.T3KAssets.hole(k.params.assetId);
+        var asset = window.KlotzwerkAssets.hole(k.params.assetId);
         if (!asset) return;
         teile.push({
           vertProperties: IO.transformiereVertices(asset.vertProperties, D.matAusTransform(k.transform)),
@@ -1899,7 +1899,7 @@
     objekte.forEach(function (k) {
       if (k.istLoch) return;   // Negative sind keine eigenen Koerper
       if (k.typ === 'import' && !k.params.wasserdicht) {
-        var asset = window.T3KAssets.hole(k.params.assetId);
+        var asset = window.KlotzwerkAssets.hole(k.params.assetId);
         if (asset) {
           anfragen.push(Promise.resolve({
             name: k.name, farbe: k.farbe,
@@ -2059,8 +2059,8 @@
     zustand.historie = H.neueHistorie(zustand.dok);
     zustand.meshCache = {};
     IO.loescheAutosave();
-    window.T3KAssets.loescheAlle();
-    window.T3KAssets.loescheDb().catch(function () { });
+    window.KlotzwerkAssets.loescheAlle();
+    window.KlotzwerkAssets.loescheDb().catch(function () { });
     zustand.worker.postMessage({ befehl: 'assetsLoeschen' });
     setzeAuswahl([]);
     zustand.viewport.versteckeSchnittebene();
