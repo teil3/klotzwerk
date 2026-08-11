@@ -4,7 +4,7 @@
  * importierte STL-Geometrie fuer 'mesh'-Anfragen (Gruppen/Export).
  */
 import ManifoldModule from '../../manifold-3d/manifold.js';
-import { knotenZuManifold, manifoldZuMesh, pruefeAsset, schneideKnoten, offsetKoerper, trenneKnoten, bohreKanal, oeffneFlaeche, streckeKnoten, streckenVorschau } from './csg-kern.mjs?v=2026-08-10n';
+import { knotenZuManifold, manifoldZuMesh, pruefeAsset, schneideKnoten, offsetKoerper, trenneKnoten, bohreKanal, oeffneFlaeche, streckeKnoten, streckenVorschau } from './csg-kern.js?v=2026-08-10n';
 
 let M = null;
 const assets = {};   // assetId -> {vertProperties, triVerts, wasserdicht, name}

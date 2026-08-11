@@ -9,7 +9,7 @@
  * tests/generators/3d-konstruktor.csg.test.js faengt Abweichungen.
  */
 
-import { baueSdf } from './sdf.mjs?v=2026-08-05p';
+import { baueSdf } from './sdf.js?v=2026-08-05p';
 
 const SEGMENTE = 64;
 const GRAD = Math.PI / 180;

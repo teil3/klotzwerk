@@ -23,7 +23,7 @@ function knoten(typ, params) {
 }
 
 (async () => {
-  const kern = await import(pathToFileURL(path.join(DATA, './esm/csg-kern.mjs')));
+  const kern = await import(pathToFileURL(path.join(DATA, './esm/csg-kern.js')));
   const mod = await import(pathToFileURL(path.join(__dirname, '../vendor/manifold-3d/manifold.js')));
   const M = await mod.default();
   M.setup();
