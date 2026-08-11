@@ -1,0 +1,95 @@
+/* Layout des 3D-Konstruktors: Palette | Viewport | Eigenschaften-Panel.
+   minmax(0,1fr) statt 1fr: sonst blaeht die Inline-Groesse des three.js-Canvas
+   die Spalte auf, und der Viewport kann nach Vollbild/Verkleinern nie schrumpfen */
+.k3d-layout { display: grid; grid-template-columns: 150px minmax(0, 1fr) 260px; gap: 12px; margin-top: 14px; }
+/* Beta-Badge und beschreibender Zusatz hinter dem Produktnamen in der H1
+   (Optik wie .ps-beta/.ps-untertitel im Part Studio) */
+.k3d-beta { font-size: 0.5em; vertical-align: middle; color: #777; border: 1px solid #ccc; border-radius: 3px; padding: 2px 6px; }
+.k3d-untertitel { font-size: 0.55em; font-weight: normal; color: #777; margin-left: 6px; }
+.k3d-statuszeile { position: relative; }
+.k3d-status { margin-top: 10px; padding: 6px 10px 6px 10px; padding-right: 110px; background: #f4f4f4; border-radius: 4px; font-size: 14px; min-height: 30px; }
+.k3d-status.k3d-fehler { background: #fdecea; color: #a12417; }
+.k3d-busy { position: absolute; top: 10px; bottom: 0; right: 10px; display: flex; align-items: center; gap: 6px; font-size: 13px; color: #666; }
+.k3d-busy[hidden] { display: none; }
+.k3d-busy-kreis { width: 13px; height: 13px; border: 2px solid #ccc; border-top-color: #E32C14; border-radius: 50%; animation: k3d-busy-drehen .8s linear infinite; }
+@keyframes k3d-busy-drehen { to { transform: rotate(360deg); } }
+.k3d-palette, .k3d-panel { background: #fafafa; border: 1px solid #e2e2e2; border-radius: 6px; padding: 10px; }
+.k3d-palette-titel { display: block; font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+.k3d-palette button { display: block; width: 100%; margin-bottom: 6px; padding: 7px 8px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; text-align: left; }
+.k3d-palette button:hover:enabled { border-color: #E32C14; }
+.k3d-palette button:disabled { opacity: 0.45; cursor: default; }
+.k3d-werkzeuge { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; align-items: center; }
+.k3d-werkzeuge button { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; }
+.k3d-werkzeuge button.k3d-aktiv { background: #E32C14; color: #fff; border-color: #E32C14; }
+.k3d-werkzeuge button:disabled { opacity: 0.45; cursor: default; }
+.k3d-trenner { width: 1px; align-self: stretch; background: #ddd; }
+.k3d-viewport { position: relative; width: 100%; height: 520px; background: #eef0f2; border-radius: 6px; overflow: hidden; }
+.k3d-viewport canvas { display: block; }
+/* Beide Dropdowns sitzen in EINER Leiste unten rechts: nebeneinander per
+   Flex statt mit festen right-Abstaenden -- so koennen sie bei laengeren
+   Beschriftungen oder groesserer Schrift nicht ueberlappen. */
+.k3d-leiste-unten { position: absolute; right: 10px; bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.k3d-raster { background: rgba(255, 255, 255, 0.85); border: 1px solid #d0d0d0; border-radius: 4px; padding: 4px 8px; font-size: 12px; color: #555; }
+.k3d-raster label { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 12px; color: #555; }
+.k3d-raster select { width: auto; font-size: 12px; padding: 2px 4px; border: 1px solid #ccc; border-radius: 4px; }
+/* Kompakte Viewport-Knoepfe in Farbkachel-Groesse: Projektions-Umschalter
+   unten rechts, Heim-Knopf unterm Navwuerfel */
+.k3d-projektion-knopf, .k3d-heim-knopf { width: 22px; height: 22px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #999; border-radius: 3px; background: rgba(255, 255, 255, 0.85); color: #555; cursor: pointer; }
+.k3d-projektion-knopf:hover, .k3d-heim-knopf:hover { background: #fff; color: #222; }
+/* linksbuendig unterm Wuerfel, mit etwas Luft dazu (User-Wunsch) */
+.k3d-heim-knopf { align-self: flex-start; margin-top: 8px; }
+.k3d-export { margin-top: 10px; display: flex; gap: 8px; }
+.k3d-panel label { display: block; font-size: 12px; margin-top: 8px; color: #555; }
+.k3d-panel input { width: 100%; box-sizing: border-box; padding: 5px 6px; border: 1px solid #ccc; border-radius: 4px; }
+.k3d-panel select { width: 100%; box-sizing: border-box; padding: 5px 6px; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.k3d-panel-leer { color: #888; font-size: 13px; }
+#k3d-panel-inhalt { overflow-y: auto; max-height: 520px; }
+.k3d-zeile { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 4px; cursor: pointer; user-select: none; font-size: 13px; }
+.k3d-zeile:hover { background: #ececec; }
+.k3d-zeile-aktiv, .k3d-zeile-aktiv:hover { background: #dde7f3; }
+.k3d-zeile-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.k3d-auge, .k3d-roentgen, .k3d-papierkorb { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: none; background: none; color: #666; cursor: pointer; border-radius: 4px; }
+.k3d-auge:hover, .k3d-roentgen:hover { background: #dcdcdc; color: #222; }
+.k3d-papierkorb:hover { background: #f3dcdc; color: #b3261e; }
+.k3d-roentgen-aktiv { color: #2b6fb3; }
+.k3d-zeile-versteckt .k3d-zeile-name { color: #a5a5a5; }
+.k3d-details { margin: 0 0 8px 0; padding: 0 6px 8px 14px; border-left: 2px solid #dde7f3; }
+.k3d-farbwahl { margin: 6px 0; }
+.k3d-farbwahl-titel { display: block; font-size: 12px; color: #555; margin-bottom: 3px; }
+.k3d-farben { display: grid; grid-template-columns: repeat(8, 22px); gap: 4px; align-items: center; }
+.k3d-farbkachel { width: 22px; height: 22px; border: 1px solid #999; border-radius: 3px; padding: 0; cursor: pointer; }
+.k3d-farbkachel.aktiv { outline: 2px solid #E32C14; outline-offset: 1px; }
+.k3d-farbe-frei { width: 22px; height: 22px; padding: 0; border: 1px solid #999; border-radius: 3px; cursor: pointer; background: none; }
+@media (max-width: 900px) {
+  .k3d-layout { grid-template-columns: minmax(0, 1fr); }
+  .k3d-viewport { height: 380px; }
+  #k3d-panel-inhalt { max-height: none; }
+}
+
+/* Export-Dialog (Umfang + Format waehlen) */
+.k3d-dialog-hinter { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35); z-index: 60; display: flex; align-items: center; justify-content: center; }
+.k3d-dialog { background: #fff; border-radius: 6px; padding: 16px 18px; min-width: 300px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25); }
+.k3d-dialog-titel { font-weight: 600; font-size: 15px; margin: 0 0 10px 0; }
+.k3d-dialog fieldset { border: none; margin: 0 0 10px 0; padding: 0; }
+.k3d-dialog legend { font-size: 12px; color: #555; padding: 0; margin-bottom: 4px; }
+.k3d-dialog fieldset label { display: flex; align-items: center; gap: 7px; font-size: 14px; margin: 3px 0; cursor: pointer; }
+.k3d-dialog input[type="radio"] { margin: 0; }
+.k3d-dialog-knoepfe { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+
+/* Navigationswuerfel oben links im Viewport (Tinkercad-Stil) */
+.k3d-navwuerfel { position: absolute; top: 10px; left: 10px; z-index: 5; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.k3d-navwuerfel-canvas { width: 90px; height: 90px; }
+.k3d-navwuerfel-canvas canvas { display: block; }
+
+/* Vollbild: der ganze Seiten-Container wird fullscreened; Breadcrumb und
+   Seitenkopf verschwinden, der Viewport waechst auf die Resthoehe. */
+.k3d-seite:fullscreen { background: #fff; width: 100%; max-width: none; overflow: auto; padding: 12px 16px; display: flex; flex-direction: column; }
+.k3d-seite:fullscreen .breadcrumb-link,
+.k3d-seite:fullscreen .terain-header { display: none; }
+.k3d-seite:fullscreen .k3d-layout { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.k3d-seite:fullscreen .k3d-mitte { display: flex; flex-direction: column; min-height: 0; }
+.k3d-seite:fullscreen .k3d-viewport { flex: 1; height: auto; min-height: 0; margin-top: 8px; }
+.k3d-seite:fullscreen .k3d-export { margin-top: 8px; }
+.k3d-seite:fullscreen .k3d-palette,
+.k3d-seite:fullscreen .k3d-panel { overflow-y: auto; min-height: 0; }
+.k3d-seite:fullscreen #k3d-panel-inhalt { max-height: none; }

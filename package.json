@@ -1,0 +1,8 @@
+{
+  "name": "klotzwerk",
+  "version": "1.0.0",
+  "description": "Browser-based 3D block construction tool (CSG) by Teil3 GmbH",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "scripts": { "test": "for f in tests/*.test.js; do node \"$f\" || exit 1; done" }
+}

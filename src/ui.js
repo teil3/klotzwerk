@@ -1,0 +1,2105 @@
+/*
+ * Verdrahtung des 3D-Konstruktors. Haelt den Zustand (Dokument, Historie,
+ * Auswahl), redet mit dem CSG-Worker und stoesst Viewport-Updates an.
+ */
+(function () {
+  'use strict';
+
+  var D = window.T3KDokument, H = window.T3KHistorie, IO = window.T3KIO;
+
+  var KANAL_DURCHMESSER = 3;   // Standard-Lochdurchmesser des Entleerungskanals in mm
+
+  var zustand = {
+    dok: null,
+    historie: null,
+    auswahl: [],
+    engineBereit: false,
+    worker: null,
+    anfragen: {},          // anfrageId -> {resolve, reject}
+    naechsteAnfrage: 1,
+    meshCache: {},         // geoSchluessel -> {vertProperties, triVerts}|null
+    viewport: null,
+    schnitt: null,
+    letzteSchnittPose: null,   // {position, rotation} der Ebene des letzten Schnitts
+    offset: null,              // {richtung, zielId, wandstaerke} im Aushoehlen/Aufdicken-Modus
+    kanal: null,               // {zielId, wandstaerke, laeuft} in der Entleerungskanal-Phase
+    strecken: null,            // {zielId, phase: 1|2, breite, normal, offset, laeuft} im Strecken-Modus
+    anlegen: null,
+    listenAnker: null,         // Id des Anker-Eintrags fuer Shift-Bereichsauswahl in der Liste
+    liveFelder: null           // Input-Referenzen des offenen Akkordeons fuer den Gizmo-Live-Sync
+  };
+
+  function $(id) { return document.getElementById(id); }
+
+  function setStatus(text, istFehler) {
+    var el = $('k3d-status');
+    el.textContent = text;
+    el.className = 'k3d-status' + (istFehler ? ' k3d-fehler' : '');
+  }
+
+  // Grammatikalisch korrekte Meldung fuer entfernte Import-Knoten (Singular/Plural)
+  function meldungEntfernteImporte(entfernt) {
+    return entfernt === 1
+      ? 'Ein importiertes Modell war nicht mehr im Browser-Speicher und wurde entfernt.'
+      : entfernt + ' importierte Modelle waren nicht mehr im Browser-Speicher und wurden entfernt.';
+  }
+
+  // --- Worker-Client -----------------------------------------------------
+
+  function starteWorker() {
+    // Worker- und WASM-URL absolut bauen: Worker loesen relative URLs gegen
+    // ihren eigenen Ort auf (bekannte Falle).
+    var workerUrl = new URL('app/externals/3d-konstruktor/esm/csg-worker.js?v=2026-08-10n', location.href);
+    var wasmUrl = new URL('app/externals/manifold-3d/manifold.wasm', location.href).href;
+    var w = new Worker(workerUrl, { type: 'module' });
+    zustand.worker = w;
+    w.onmessage = function (e) {
+      var d = e.data;
+      if (d.befehl === 'bereit') {
+        zustand.engineBereit = true;
+        (zustand.assetsGeladen || Promise.resolve()).then(function () {
+          // Verwaiste Assets (kein Import-Knoten referenziert sie mehr)
+          // fliegen vor der Registrierung raus -- sie sammeln sich sonst
+          // ueber Reloads unbegrenzt in IndexedDB und Worker-RAM an.
+          entferneVerwaisteAssets();
+          // Jedes Asset einzeln registrieren: ein defekter Eintrag (kaputte
+          // IndexedDB-Daten, sync- oder async-Wurf) darf nicht die ganze
+          // Kette (und damit die Palette) lahmlegen -- betroffenes Asset
+          // wird stattdessen aus dem Store entfernt und zaehlt als fehlend.
+          return Promise.all(window.T3KAssets.alleIds().map(function (id) {
+            var daten = window.T3KAssets.hole(id);
+            var p;
+            try { p = frageAsset(id, daten); }
+            catch (err) { p = Promise.reject(err); }
+            return p.catch(function () {
+              window.T3KAssets.loesche(id);
+              window.T3KAssets.loescheInDb(id).catch(function () { });
+            });
+          }));
+        }).then(function () {
+          var entfernt = entferneVerwaisteImporte(zustand.dok.objekte);
+          if (entfernt > 0) {
+            IO.speichereAutosave(D.serialisiere(zustand.dok));
+            setStatus(meldungEntfernteImporte(entfernt), true);
+          } else {
+            setStatus('Bereit. Wähle links einen Grundkörper.');
+          }
+        }).catch(function (err) {
+          // Sollte hier oben nie ankommen (jedes Asset wird einzeln
+          // abgefangen) -- als letzte Sicherung trotzdem Palette
+          // freigeben statt den Editor stumm zu blockieren.
+          setStatus('Importierte Modelle konnten nicht vollständig geladen werden (' + err.message + ').', true);
+        }).then(function () {
+          Array.prototype.forEach.call(document.querySelectorAll('#k3d-palette button'), function (b) { b.disabled = false; });
+          zeichneAlles();
+        });
+        return;
+      }
+      if (d.befehl === 'initFehler') {
+        setStatus('Die 3D-Engine konnte nicht geladen werden (' + d.meldung + '). Lade die Seite neu.', true);
+        return;
+      }
+      var a = zustand.anfragen[d.anfrageId];
+      if (!a) return;
+      delete zustand.anfragen[d.anfrageId];
+      aktualisiereBusy();
+      if (d.befehl === 'fehler') a.reject(new Error(d.meldung));
+      else if (d.befehl === 'assetErgebnis') a.resolve({ wasserdicht: d.wasserdicht, dreiecke: d.dreiecke });
+      else if (d.befehl === 'schnittErgebnis') a.resolve(d.teile);
+      else if (d.befehl === 'trennErgebnis') a.resolve(d.teile);
+      else if (d.befehl === 'offsetErgebnis') a.resolve({ vertProperties: d.vertProperties, triVerts: d.triVerts });
+      else if (d.befehl === 'kanalErgebnis') a.resolve({ vertProperties: d.vertProperties, triVerts: d.triVerts });
+      else if (d.befehl === 'streckenVorschauErgebnis') a.resolve({ teilA: d.teilA, teilB: d.teilB, mitte: d.mitte });
+      else a.resolve(d.leer ? null : { vertProperties: d.vertProperties, triVerts: d.triVerts });
+    };
+    w.onerror = function () {
+      zustand.engineBereit = false;
+      // Ausstehende Anfragen (exportiereSTL, zeichne, ...) haengen sonst ewig:
+      // alle rejecten, damit die .catch-Pfade der Aufrufer greifen.
+      Object.keys(zustand.anfragen).forEach(function (id) {
+        zustand.anfragen[id].reject(new Error('Engine abgestürzt'));
+      });
+      zustand.anfragen = {};
+      aktualisiereBusy();
+      setStatus('Die 3D-Engine ist abgestürzt. Lade die Seite neu — dein Projekt ist gespeichert.', true);
+    };
+    w.postMessage({ befehl: 'init', wasmUrl: wasmUrl });
+  }
+
+  // Busy-Indicator: sichtbar, solange der Worker an Anfragen rechnet --
+  // in der Statuszeile und als Fortschritts-Cursor am Mauszeiger
+  function aktualisiereBusy() {
+    var busy = Object.keys(zustand.anfragen).length > 0;
+    $('k3d-busy').hidden = !busy;
+    document.body.style.cursor = busy ? 'progress' : '';
+  }
+
+  function frageAsset(assetId, daten) {
+    var id = zustand.naechsteAnfrage++;
+    return new Promise(function (resolve, reject) {
+      zustand.anfragen[id] = { resolve: resolve, reject: reject };
+      aktualisiereBusy();
+      var vp = daten.vertProperties.slice(), tv = daten.triVerts.slice();
+      zustand.worker.postMessage(
+        { befehl: 'asset', anfrageId: id, assetId: assetId, name: daten.name, vertProperties: vp, triVerts: tv },
+        [vp.buffer, tv.buffer]
+      );
+    });
+  }
+
+  function frageMesh(knoten) {
+    if (knoten.typ === 'import') {
+      // Import-Geometrie liegt fertig im Asset-Store; kein Worker-Umweg.
+      var asset = window.T3KAssets.hole(knoten.params.assetId);
+      if (!asset) return Promise.resolve(null);
+      // Kopien: BufferAttribute uebernimmt die Arrays
+      return Promise.resolve({ vertProperties: asset.vertProperties.slice(), triVerts: asset.triVerts.slice() });
+    }
+    var schluessel = knoten.id + '|' + JSON.stringify(knoten.typ === 'gruppe' ? knoten.kinder : knoten.params);
+    if (zustand.meshCache[schluessel]) {
+      var c = zustand.meshCache[schluessel];
+      // Kopien zurueckgeben: BufferAttribute uebernimmt die Arrays
+      return Promise.resolve({ vertProperties: c.vertProperties.slice(), triVerts: c.triVerts.slice() });
+    }
+    if (!zustand.engineBereit) return Promise.resolve(null);
+    var id = zustand.naechsteAnfrage++;
+    return new Promise(function (resolve, reject) {
+      zustand.anfragen[id] = { resolve: resolve, reject: reject };
+      aktualisiereBusy();
+      zustand.worker.postMessage({ befehl: 'mesh', anfrageId: id, knoten: JSON.parse(JSON.stringify(knoten)) });
+    }).then(function (daten) {
+      if (daten && knoten.id !== 'probe') {
+        // Alte Cache-Eintraege desselben Objekts verwerfen, sonst waechst der
+        // Cache mit jeder Param-Stufe unbegrenzt ueber die Session.
+        var praefix = knoten.id + '|';
+        Object.keys(zustand.meshCache).forEach(function (k) {
+          if (k.indexOf(praefix) === 0 && k !== schluessel) delete zustand.meshCache[k];
+        });
+        zustand.meshCache[schluessel] = { vertProperties: daten.vertProperties.slice(), triVerts: daten.triVerts.slice() };
+      }
+      return daten;
+    });
+  }
+
+  function frageSchnitt(knoten, normal, offset) {
+    var id = zustand.naechsteAnfrage++;
+    return new Promise(function (resolve, reject) {
+      zustand.anfragen[id] = { resolve: resolve, reject: reject };
+      aktualisiereBusy();
+      zustand.worker.postMessage({
+        befehl: 'schneiden', anfrageId: id,
+        knoten: JSON.parse(JSON.stringify(knoten)), normal: normal, offset: offset
+      });
+    });
+  }
+
+  function frageStreckenVorschau(knoten, normal, offset) {
+    var id = zustand.naechsteAnfrage++;
+    return new Promise(function (resolve, reject) {
+      zustand.anfragen[id] = { resolve: resolve, reject: reject };
+      aktualisiereBusy();
+      zustand.worker.postMessage({
+        befehl: 'streckenVorschau', anfrageId: id,
+        knoten: JSON.parse(JSON.stringify(knoten)), normal: normal, offset: offset
+      });
+    });
+  }
+
+  function frageStrecken(knoten, normal, offset, breite) {
+    var id = zustand.naechsteAnfrage++;
+    return new Promise(function (resolve, reject) {
+      zustand.anfragen[id] = { resolve: resolve, reject: reject };
+      aktualisiereBusy();
+      zustand.worker.postMessage({
+        befehl: 'strecken', anfrageId: id,
+        knoten: JSON.parse(JSON.stringify(knoten)), normal: normal, offset: offset, breite: breite
+      });
+    });
+  }
+
+  function frageOffset(knoten, richtung, wandstaerke) {
+    var id = zustand.naechsteAnfrage++;
+    return new Promise(function (resolve, reject) {
+      zustand.anfragen[id] = { resolve: resolve, reject: reject };
+      aktualisiereBusy();
+      zustand.worker.postMessage({
+        befehl: 'offsetKoerper', anfrageId: id,
+        knoten: JSON.parse(JSON.stringify(knoten)),
+        richtung: richtung, wandstaerke: wandstaerke
+      });
+    });
+  }
+
+  function frageKanal(knoten, stelle, tiefe, durchmesser) {
+    var id = zustand.naechsteAnfrage++;
+    return new Promise(function (resolve, reject) {
+      zustand.anfragen[id] = { resolve: resolve, reject: reject };
+      aktualisiereBusy();
+      zustand.worker.postMessage({
+        befehl: 'bohreKanal', anfrageId: id,
+        knoten: JSON.parse(JSON.stringify(knoten)),
+        punkt: stelle.punkt, normale: stelle.normale,
+        tiefe: tiefe, marge: 0.1, durchmesser: durchmesser
+      });
+    });
+  }
+
+  // Ganze Flaeche ausschneiden (Alternative zum runden Loch): schickt die
+  // Flaechen-Dreiecke (Weltkoordinaten, aus dem Viewport-Hover) an den
+  // CSG-Worker; der antwortet wie bohreKanal mit 'kanalErgebnis'.
+  function frageFlaechenOeffnung(knoten, flaeche, tiefe) {
+    var id = zustand.naechsteAnfrage++;
+    return new Promise(function (resolve, reject) {
+      zustand.anfragen[id] = { resolve: resolve, reject: reject };
+      aktualisiereBusy();
+      zustand.worker.postMessage({
+        befehl: 'oeffneFlaeche', anfrageId: id,
+        knoten: JSON.parse(JSON.stringify(knoten)),
+        dreiecke: flaeche.dreiecke, normale: flaeche.normale,
+        tiefe: tiefe, marge: 0.1
+      }, [flaeche.dreiecke.buffer]);
+    });
+  }
+
+  function frageTrennen(knoten) {
+    var id = zustand.naechsteAnfrage++;
+    return new Promise(function (resolve, reject) {
+      zustand.anfragen[id] = { resolve: resolve, reject: reject };
+      aktualisiereBusy();
+      zustand.worker.postMessage({
+        befehl: 'auftrennen', anfrageId: id,
+        knoten: JSON.parse(JSON.stringify(knoten))
+      });
+    });
+  }
+
+  function zeichneAlles() {
+    zustand.viewport.zeichne(zustand.dok, frageMesh);
+    zustand.viewport.setzeAuswahl(zustand.auswahl);
+  }
+
+  // --- Aenderungs-Pipeline: merken + speichern + zeichnen ----------------
+
+  var autosaveTimer = null;
+  function nachAenderung() {
+    H.merke(zustand.historie, zustand.dok);
+    clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(function () {
+      if (!IO.speichereAutosave(D.serialisiere(zustand.dok))) {
+        setStatus('Automatisches Speichern fehlgeschlagen (Speicher voll?). Lade dein Projekt als STL herunter.', true);
+      }
+    }, 500);
+    zeichneAlles();
+    aktualisiereWerkzeugleiste();
+  }
+
+  // --- Start -------------------------------------------------------------
+
+  document.addEventListener('DOMContentLoaded', function () {
+    var gespeichert = IO.ladeAutosave();
+    if (gespeichert) {
+      try { zustand.dok = D.deserialisiere(gespeichert); }
+      catch (e) { zustand.dok = D.neuesDokument(); }
+    } else {
+      zustand.dok = D.neuesDokument();
+    }
+    zustand.historie = H.neueHistorie(zustand.dok);
+
+    // Assets aus IndexedDB laden; Import-Knoten ohne Asset (z.B. Speicher
+    // geleert) fliegen raus, bevor gezeichnet wird.
+    zustand.assetsGeladen = window.T3KAssets.ladeAlleAusDb()
+      .catch(function () { })
+      .then(function () {
+        var entfernt = entferneVerwaisteImporte(zustand.dok.objekte);
+        if (entfernt > 0) {
+          IO.speichereAutosave(D.serialisiere(zustand.dok));
+          setStatus(meldungEntfernteImporte(entfernt), true);
+        }
+      });
+
+    zustand.viewport = window.T3KViewport.initViewport($('k3d-viewport'), {
+      beiAuswahl: function (ids) { setzeAuswahl(ids, 'viewport'); },
+      beiTransformEnde: function (id, transform) {
+        if (id === '__schnittebene') { if (zustand.schnitt || zustand.strecken) zeichnePanel(); return; }
+        var k = D.findeKnoten(zustand.dok, id);
+        if (!k) return;
+        k.transform = transform;
+        nachAenderung();
+        zeichnePanel();
+      },
+      // Waehrend des Gizmo-Drags nur die Anzeige nachfuehren -- Dokument,
+      // Undo und Autosave laufen erst ueber beiTransformEnde
+      beiTransformLive: function (id, transform) {
+        var lf = zustand.liveFelder;
+        if (!lf || lf.id !== id) return;
+        function setze(input, wert) {
+          if (input && input !== document.activeElement) input.value = wert;
+        }
+        for (var i = 0; i < 3; i++) {
+          if (lf.basis && lf.basis[i] > 0) {
+            setze(lf.groesse[i], Math.round(lf.basis[i] * transform.skalierung[i] * 10) / 10);
+          }
+          setze(lf.position[i], transform.position[i]);
+          setze(lf.drehung[i], transform.rotation[i]);
+        }
+      },
+      beiMeshFehler: function (meldung) { setStatus(meldung, true); },
+      // Panel nachziehen, wenn das Mesh des ausgewaehlten Knotens eintrifft
+      // (z.B. Groessenfelder einer frisch erstellten Gruppe)
+      beiMeshBereit: function (id) {
+        if (zustand.kanal && zustand.kanal.zielId === id) {
+          var fehler = zustand.viewport.starteKanalModus(id, zustand.kanal.durchmesser, zustand.kanal.form);
+          if (fehler) setStatus(fehler, true);
+        }
+        if (!zustand.schnitt && zustand.auswahl.length === 1 && zustand.auswahl[0] === id) zeichnePanel();
+      },
+      beiKanalKlick: function (id, stelle) {
+        var kz = zustand.kanal;
+        if (!kz || kz.zielId !== id || kz.laeuft) return;
+        var knoten = D.findeKnoten(zustand.dok, id);
+        if (!knoten) { brichKanalAb(); return; }
+        kz.laeuft = true;
+        var istFlaeche = !!stelle.flaeche;
+        setStatus(istFlaeche ? 'Fläche wird ausgeschnitten …' : 'Kanal wird gebohrt …');
+        // Tiefe Wand x 1.5: durchstoesst die Wand (SDF-Streuung) sicher,
+        // erreicht die gegenueberliegende Innenwand aber nicht
+        var anfrage = istFlaeche
+          ? frageFlaechenOeffnung(knoten, stelle.flaeche, kz.wandstaerke * 1.5)
+          : frageKanal(knoten, stelle, kz.wandstaerke * 1.5, kz.durchmesser);
+        anfrage.then(function (t) {
+          if (zustand.kanal !== kz) return;   // Phase inzwischen beendet
+          kz.laeuft = false;
+          zustand.viewport.beendeKanalModus();   // altes Mesh verschwindet gleich
+          var k = ersetzeDurchErgebnis(knoten, t, knoten.name);
+          kz.zielId = k.id;
+          setzeAuswahl([k.id]);
+          nachAenderung();
+          setStatus(istFlaeche
+            ? 'Fläche ausgeschnitten — weitere Fläche anklicken oder «Fertig».'
+            : 'Kanal gebohrt — weitere Stelle anklicken oder «Fertig».');
+        }).catch(function (err) {
+          if (zustand.kanal !== kz) return;
+          kz.laeuft = false;
+          setStatus((istFlaeche ? 'Ausschneiden' : 'Kanal') + ' fehlgeschlagen (' + err.message + ') — dein Modell ist unverändert.', true);
+        });
+      },
+      beiKanalMeldung: function (meldung) {
+        if (zustand.kanal) setStatus(meldung, true);
+      },
+      beiStreckBreite: function (breite) { setzeStreckBreite(breite); },
+      beiAnlegenPhase: function (phase) {
+        if (!zustand.anlegen) return;
+        zustand.anlegen.phase = phase;
+        zeichnePanel();
+        setStatus('Zielfläche eines anderen Objekts oder die Arbeitsfläche anklicken.');
+      },
+      beiAnlegenEnde: function () {
+        beendeAnlegenModus();
+        setStatus('Angelegt.');
+      },
+      beiAnlegenMeldung: function (text) { setStatus(text, true); }
+    });
+    initRaster();
+    initProjektion();
+
+    Array.prototype.forEach.call(document.querySelectorAll('#k3d-palette button[data-typ]'), function (b) {
+      b.addEventListener('click', function () {
+        var k = D.neuerKoerper(zustand.dok, b.getAttribute('data-typ'));
+        // Neue Koerper leicht versetzen, damit sie nicht ineinander stehen
+        var n = zustand.dok.objekte.length - 1;
+        k.transform.position = [(n % 4) * 30 - 45, (Math.floor(n / 4) % 4) * 30 - 45, 0];
+        setzeAuswahl([k.id]);
+        nachAenderung();
+      });
+    });
+
+    starteWorker();
+    zeichneAlles();
+    zeichnePanel();
+
+    $('btn-import').addEventListener('click', function () { $('datei-import').click(); });
+    $('datei-import').addEventListener('change', function () {
+      var dateien = Array.prototype.slice.call(this.files);
+      this.value = '';
+      if (!dateien.length) return;
+      var mtl = dateien.filter(function (f) { return /\.mtl$/i.test(f.name); });
+      var verarbeitet = false;
+      dateien.forEach(function (f) {
+        if (/\.mtl$/i.test(f.name)) return;   // gehoert zum OBJ
+        verarbeitet = true;
+        if (/\.3mf$/i.test(f.name)) importiere3MFDatei(f);
+        else if (/\.obj$/i.test(f.name)) importiereOBJDatei(f, mtl[0] || null);
+        else importiereSTLDatei(f);
+      });
+      if (!verarbeitet && mtl.length) {
+        setStatus('Eine MTL-Datei gehört zu einer OBJ-Datei — wähle beide zusammen aus.', true);
+      }
+    });
+
+    $('btn-projekt-speichern').addEventListener('click', function () {
+      if (zustand.dok.objekte.length === 0) { setStatus('Noch nichts zu sichern.', true); return; }
+      IO.downloadText(IO.exportiereProjekt(zustand.dok, window.T3KAssets.hole), 'teil3-projekt.json');
+      setStatus('Projekt als Datei gesichert.');
+    });
+
+    $('btn-projekt-oeffnen').addEventListener('click', function () { $('datei-projekt').click(); });
+    $('datei-projekt').addEventListener('change', function () {
+      if (this.files[0]) oeffneProjektDatei(this.files[0]);
+      this.value = '';
+    });
+
+    $('btn-undo').addEventListener('click', undo);
+    $('btn-redo').addEventListener('click', redo);
+
+    $('btn-loch').addEventListener('click', function () {
+      zustand.auswahl.forEach(function (id) {
+        var k = D.findeKnoten(zustand.dok, id);
+        if (k) D.setzeLoch(zustand.dok, id, !k.istLoch);
+      });
+      nachAenderung();
+      zeichnePanel();
+    });
+
+    $('btn-gruppieren').addEventListener('click', function () {
+      var ids = zustand.auswahl.slice();
+      // Probe: wuerde die Gruppe leer? Dann gar nicht erst gruppieren.
+      var probe = {
+        id: 'probe', typ: 'gruppe', istLoch: false,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] },
+        kinder: ids.map(function (id) { return D.findeKnoten(zustand.dok, id); })
+      };
+      frageMesh(probe).then(function (daten) {
+        if (!daten) {
+          setStatus('Diese Gruppe wäre leer — die Negative entfernen alles. Nicht gruppiert.', true);
+          return;
+        }
+        var gId = D.gruppiere(zustand.dok, ids);
+        setzeAuswahl([gId]);
+        nachAenderung();
+      }).catch(function (err) {
+        setStatus('Gruppieren fehlgeschlagen (' + err.message + '). Dein Modell ist unverändert.', true);
+      });
+    });
+
+    $('btn-aufloesen').addEventListener('click', function () {
+      var kindIds = D.loeseAuf(zustand.dok, zustand.auswahl[0]);
+      if (kindIds.length) {
+        setzeAuswahl(kindIds);
+        nachAenderung();
+      }
+    });
+
+    $('btn-schneiden').addEventListener('click', function () {
+      if (zustand.schnitt) {
+        brichSchnittAb();
+        setStatus('Schneiden abgebrochen.');
+      } else {
+        starteSchnittModus();
+      }
+    });
+
+    $('btn-strecken').addEventListener('click', function () {
+      if (zustand.strecken) {
+        brichStreckenAb();
+        setStatus('Strecken abgebrochen.');
+      } else {
+        starteStreckenModus();
+      }
+    });
+
+    $('btn-aushoehlen').addEventListener('click', function () {
+      if (zustand.kanal) { brichKanalAb(); setStatus('Entleerungskanal beendet.'); return; }
+      starteOffsetModus('innen');
+    });
+    $('btn-aufdicken').addEventListener('click', function () { starteOffsetModus('aussen'); });
+
+    $('btn-anlegen').addEventListener('click', function () {
+      if (zustand.anlegen) {
+        brichAnlegenAb();
+        setStatus('Anlegen abgebrochen.');
+      } else {
+        starteAnlegenModus();
+      }
+    });
+
+    $('btn-auftrennen').addEventListener('click', function () {
+      var knoten = D.findeKnoten(zustand.dok, zustand.auswahl[0]);
+      if (!knoten) return;
+      setStatus('Wird aufgetrennt …');
+      frageTrennen(knoten).then(function (teile) {
+        // Stale-Guard: Objekt inzwischen geloescht/ersetzt (Undo, Doppelklick)
+        if (D.findeKnoten(zustand.dok, knoten.id) !== knoten) return;
+        if (!teile || teile.length < 2) {
+          setStatus('Das Objekt besteht aus einem Teil — nichts aufgetrennt.', true);
+          return;
+        }
+        var erg = ersetzeDurchTeile(knoten, teile);
+        setzeAuswahl(erg.neueIds);
+        nachAenderung();
+        if (!erg.quotaGemeldet) setStatus('In ' + teile.length + ' Teile aufgetrennt.');
+      }).catch(function (err) {
+        setStatus('Auftrennen fehlgeschlagen (' + err.message + ') — dein Modell ist unverändert.', true);
+      });
+    });
+
+    $('btn-duplizieren').addEventListener('click', function () {
+      var neuId = D.dupliziere(zustand.dok, zustand.auswahl[0]);
+      if (neuId) { setzeAuswahl([neuId]); nachAenderung(); }
+    });
+
+    $('btn-loeschen').addEventListener('click', function () {
+      zustand.auswahl.forEach(function (id) { D.entferneKnoten(zustand.dok, id); });
+      setzeAuswahl([]);
+      nachAenderung();
+    });
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && zustand.schnitt) {
+        brichSchnittAb();
+        setStatus('Schneiden abgebrochen.');
+        return;
+      }
+      if (e.key === 'Escape' && zustand.strecken) {
+        brichStreckenAb();
+        setStatus('Strecken abgebrochen.');
+        return;
+      }
+      if (e.key === 'Escape' && zustand.offset) {
+        var offRichtung = zustand.offset.richtung;
+        brichOffsetAb();
+        setStatus(offRichtung === 'innen' ? 'Aushöhlen abgebrochen.' : 'Aufdicken abgebrochen.');
+        return;
+      }
+      if (e.key === 'Escape' && zustand.kanal) {
+        brichKanalAb();
+        setStatus('Entleerungskanal beendet.');
+        return;
+      }
+      if (e.key === 'Escape' && zustand.anlegen) {
+        brichAnlegenAb();
+        setStatus('Anlegen abgebrochen.');
+        return;
+      }
+      if (e.target.tagName === 'INPUT') return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); }
+      if (e.key === 'Delete') { $('btn-loeschen').click(); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); if (zustand.auswahl.length === 1) $('btn-duplizieren').click(); }
+    });
+    aktualisiereWerkzeugleiste();
+  });
+
+  // --- Fangraster-Dropdown (unten rechts im Viewport) ----------------------
+
+  // Gemeinsame Leiste unten rechts im Viewport (Raster + Ansicht nebeneinander)
+  function leisteUnten() {
+    var l = $('k3d-viewport').querySelector('.k3d-leiste-unten');
+    if (!l) {
+      l = document.createElement('div');
+      l.className = 'k3d-leiste-unten';
+      $('k3d-viewport').appendChild(l);
+    }
+    return l;
+  }
+
+  var RASTER_KEY = 'k3d-raster';
+
+  function initRaster() {
+    var behaelter = document.createElement('div');
+    behaelter.className = 'k3d-raster';
+    var label = document.createElement('label');
+    label.textContent = 'Raster';
+    var select = document.createElement('select');
+    select.title = 'Fangraster für Verschieben und Skalieren';
+    [['frei', 'Frei'], ['0.1', '0.1 mm'], ['1', '1 mm'], ['10', '10 mm']].forEach(function (o) {
+      var opt = document.createElement('option');
+      opt.value = o[0];
+      opt.textContent = o[1];
+      select.appendChild(opt);
+    });
+    var gemerkt = null;
+    try { gemerkt = localStorage.getItem(RASTER_KEY); } catch (e) { }
+    select.value = (gemerkt === 'frei' || gemerkt === '0.1' || gemerkt === '10') ? gemerkt : '1';
+    function anwenden() {
+      zustand.viewport.setzeRaster(select.value === 'frei' ? null : parseFloat(select.value));
+      try { localStorage.setItem(RASTER_KEY, select.value); } catch (e) { }
+    }
+    select.addEventListener('change', anwenden);
+    label.appendChild(select);
+    behaelter.appendChild(label);
+    leisteUnten().appendChild(behaelter);
+    anwenden();
+  }
+
+  // --- Projektions-Umschalter (unten rechts im Viewport) --------------------
+  // Kompakter Toggle-Knopf in Farbkachel-Groesse (22x22) statt Dropdown;
+  // das Icon zeigt den AKTUELLEN Modus, der title erklaert den Klick.
+
+  var PROJEKTION_KEY = 'k3d-projektion';
+  var PROJEKTION_SVG = {
+    // Frustum mit Fluchtlinien: Kanten laufen zusammen
+    perspektive: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">' +
+      '<path d="M5 4 L11 4 L14 12 L2 12 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>' +
+      '</svg>',
+    // Rechteck: Kanten bleiben parallel
+    parallel: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">' +
+      '<rect x="3.5" y="4" width="9" height="8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>' +
+      '</svg>'
+  };
+
+  function initProjektion() {
+    var knopf = document.createElement('button');
+    knopf.type = 'button';
+    knopf.className = 'k3d-projektion-knopf';
+    var gemerkt = null;
+    try { gemerkt = localStorage.getItem(PROJEKTION_KEY); } catch (e) { }
+    var modus = gemerkt === 'parallel' ? 'parallel' : 'perspektive';
+    function anwenden() {
+      knopf.innerHTML = PROJEKTION_SVG[modus];
+      knopf.title = modus === 'parallel'
+        ? 'Ansicht: Parallel — klicken für Perspektive'
+        : 'Ansicht: Perspektive — klicken für Parallelprojektion';
+      zustand.viewport.setzeProjektion(modus);
+      try { localStorage.setItem(PROJEKTION_KEY, modus); } catch (e) { }
+    }
+    knopf.addEventListener('click', function () {
+      modus = modus === 'parallel' ? 'perspektive' : 'parallel';
+      anwenden();
+    });
+    leisteUnten().appendChild(knopf);
+    anwenden();
+  }
+
+  // --- Import --------------------------------------------------------------
+
+  function rund2(x) { return Math.round(x * 100) / 100; }
+
+  // Bounding-Box der Roh-Geometrie: XY mittig auf den Ursprung,
+  // Unterseite auf die Arbeitsflaeche (Z=0)
+  function platzierungFuer(vertProperties) {
+    var minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (var i = 0; i < vertProperties.length; i += 3) {
+      if (vertProperties[i] < minX) minX = vertProperties[i];
+      if (vertProperties[i] > maxX) maxX = vertProperties[i];
+      if (vertProperties[i + 1] < minY) minY = vertProperties[i + 1];
+      if (vertProperties[i + 1] > maxY) maxY = vertProperties[i + 1];
+      if (vertProperties[i + 2] < minZ) minZ = vertProperties[i + 2];
+    }
+    return [rund2(-(minX + maxX) / 2), rund2(-(minY + maxY) / 2), rund2(-minZ)];
+  }
+
+  function entferneVerwaisteImporte(liste) {
+    var entfernt = 0;
+    for (var i = liste.length - 1; i >= 0; i--) {
+      var k = liste[i];
+      if (k.typ === 'import' && !window.T3KAssets.hole(k.params.assetId)) { liste.splice(i, 1); entfernt++; }
+      else if (k.typ === 'gruppe') entfernt += entferneVerwaisteImporte(k.kinder);
+    }
+    return entfernt;
+  }
+
+  // Umgekehrte Richtung zu entferneVerwaisteImporte: Assets im Store, die
+  // von keinem Import-Knoten mehr referenziert werden (z.B. nach Loeschen
+  // waehrend die Session lief -- Undo/Redo braucht das Asset noch, deshalb
+  // wird beim Loeschen selbst nichts freigegeben). Ohne diesen Sweep sammeln
+  // sich solche Leichen bei jedem Reload unbegrenzt in IndexedDB an.
+  function entferneVerwaisteAssets() {
+    var referenziert = {};
+    IO.sammleAssetIds(zustand.dok).forEach(function (id) { referenziert[id] = true; });
+    window.T3KAssets.alleIds().forEach(function (id) {
+      if (!referenziert[id]) {
+        window.T3KAssets.loesche(id);
+        window.T3KAssets.loescheInDb(id).catch(function () { });
+      }
+    });
+  }
+
+  function importiereSTLDatei(file) {
+    if (!zustand.engineBereit) {
+      setStatus('Die Engine lädt noch oder ist abgestürzt — lade die Seite neu.', true);
+      return;
+    }
+    setStatus('«' + file.name + '» wird gelesen …');
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      var daten;
+      try { daten = IO.parseSTL(e.target.result); }
+      catch (err) { setStatus('«' + file.name + '» konnte nicht gelesen werden: ' + err.message, true); return; }
+      var assetId = window.T3KAssets.neueAssetId();
+      var eintrag = { name: file.name, vertProperties: daten.vertProperties, triVerts: daten.triVerts, wasserdicht: false };
+      frageAsset(assetId, eintrag).then(function (erg) {
+        eintrag.wasserdicht = erg.wasserdicht;
+        window.T3KAssets.registriere(assetId, eintrag);
+        window.T3KAssets.speichereInDb(assetId).catch(function () {
+          setStatus('Browser-Speicher voll — das Modell ist geladen, überlebt aber kein Neuladen. Sichere dein Projekt als Datei.', true);
+        });
+        var k = D.neuerImport(zustand.dok, file.name, assetId, erg.dreiecke, erg.wasserdicht);
+        k.transform.position = platzierungFuer(daten.vertProperties);
+        setzeAuswahl([k.id]);
+        nachAenderung();
+        if (!erg.wasserdicht) {
+          setStatus('«' + file.name + '» ist nicht wasserdicht: platzieren und exportieren geht, als Negativ oder in Gruppen nicht.', true);
+        } else if (erg.dreiecke > 1000000) {
+          setStatus('«' + file.name + '» geladen. Tipp: sehr grosse Modelle vorher mit dem Polygon-Reduzierer verkleinern.');
+        } else {
+          setStatus('«' + file.name + '» geladen.');
+        }
+      }).catch(function (err) {
+        setStatus('«' + file.name + '» konnte nicht geprüft werden (' + err.message + ').', true);
+      });
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  // Gemeinsamer Mehrteile-Import (3MF/OBJ): ein Konstruktor-Objekt PRO Teil,
+  // mit Name und Farbe aus der Datei. Die Teile behalten ihre Lage --
+  // Baugruppen nicht auseinanderreissen, darum bewusst KEIN platzierungFuer.
+  function importiereTeileListe(dateiName, teile, hinweis) {
+    var quotaGemeldet = false;
+    return Promise.all(teile.map(function (teil, i) {
+      var assetId = window.T3KAssets.neueAssetId();
+      var name = teil.name || (dateiName + (teile.length > 1 ? ' (' + (i + 1) + ')' : ''));
+      var eintrag = { name: name, vertProperties: teil.vertProperties, triVerts: teil.triVerts, wasserdicht: false };
+      return frageAsset(assetId, eintrag).then(function (erg) {
+        eintrag.wasserdicht = erg.wasserdicht;
+        window.T3KAssets.registriere(assetId, eintrag);
+        window.T3KAssets.speichereInDb(assetId).catch(function () {
+          if (!quotaGemeldet) {
+            quotaGemeldet = true;
+            setStatus('Browser-Speicher voll — das Modell ist geladen, überlebt aber kein Neuladen. Sichere dein Projekt als Datei.', true);
+          }
+        });
+        return { name: name, farbe: teil.farbe, assetId: assetId, erg: erg };
+      });
+    })).then(function (fertig) {
+      var ids = [], mitFarbe = 0, undicht = 0;
+      fertig.forEach(function (f) {
+        var k = D.neuerImport(zustand.dok, f.name, f.assetId, f.erg.dreiecke, f.erg.wasserdicht);
+        if (f.farbe) { D.setzeFarbe(zustand.dok, k.id, f.farbe); mitFarbe++; }
+        if (!f.erg.wasserdicht) undicht++;
+        ids.push(k.id);
+      });
+      setzeAuswahl(ids);
+      nachAenderung();
+      var meldung = ids.length + (ids.length === 1 ? ' Objekt' : ' Objekte') + ' aus «' + dateiName + '» geladen' +
+        (mitFarbe ? ' (' + mitFarbe + ' mit Farbe)' : '') + '.' + (hinweis ? ' ' + hinweis : '');
+      if (undicht) {
+        setStatus(meldung + ' ' + undicht + ' davon nicht wasserdicht: platzieren und exportieren geht, als Negativ oder in Gruppen nicht.', true);
+      } else {
+        setStatus(meldung, !!hinweis);
+      }
+    });
+  }
+
+  function importiere3MFDatei(file) {
+    if (!zustand.engineBereit) {
+      setStatus('Die Engine lädt noch oder ist abgestürzt — lade die Seite neu.', true);
+      return;
+    }
+    setStatus('«' + file.name + '» wird gelesen …');
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      IO.parse3MF(e.target.result).then(function (teile) {
+        return importiereTeileListe(file.name, teile, null);
+      }).catch(function (err) {
+        setStatus('«' + file.name + '» konnte nicht gelesen werden: ' + err.message, true);
+      });
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  // OBJ (+ optionale MTL-Datei fuer Farben; beide zusammen im Dialog waehlen)
+  function importiereOBJDatei(file, mtlFile) {
+    if (!zustand.engineBereit) {
+      setStatus('Die Engine lädt noch oder ist abgestürzt — lade die Seite neu.', true);
+      return;
+    }
+    setStatus('«' + file.name + '» wird gelesen …');
+    function lesen(f) {
+      return new Promise(function (resolve, reject) {
+        var r = new FileReader();
+        r.onload = function (e) { resolve(e.target.result); };
+        r.onerror = function () { reject(new Error('Datei nicht lesbar')); };
+        r.readAsText(f);
+      });
+    }
+    Promise.all([lesen(file), mtlFile ? lesen(mtlFile) : Promise.resolve(null)]).then(function (texte) {
+      var farben = texte[1] ? IO.parseMTL(texte[1]) : {};
+      var mitMaterial = false;
+      var teile = IO.parseOBJ(texte[0]).map(function (teil) {
+        if (teil.material) mitMaterial = true;
+        return { name: teil.name, farbe: (teil.material && farben[teil.material]) || null,
+                 vertProperties: teil.vertProperties, triVerts: teil.triVerts };
+      });
+      var hinweis = (mitMaterial && !mtlFile)
+        ? 'Tipp: die zugehörige MTL-Datei mit auswählen, dann kommen die Farben mit.' : null;
+      return importiereTeileListe(file.name, teile, hinweis);
+    }).catch(function (err) {
+      setStatus('«' + file.name + '» konnte nicht gelesen werden: ' + err.message, true);
+    });
+  }
+
+  function oeffneProjektDatei(file) {
+    var reader = new FileReader();
+    reader.onload = function (e) {
+      var projekt;
+      try { projekt = IO.importiereProjekt(e.target.result); }
+      catch (err) { setStatus(err.message, true); return; }
+      if (!zustand.engineBereit) {
+        setStatus('Die Engine lädt noch oder ist abgestürzt — lade die Seite neu.', true);
+        return;
+      }
+      if (zustand.dok.objekte.length > 0 && !window.confirm('Aktuelles Projekt ersetzen?')) return;
+      window.T3KAssets.loescheAlle();
+      window.T3KAssets.loescheDb().catch(function () { });
+      zustand.worker.postMessage({ befehl: 'assetsLoeschen' });
+      var quotaGemeldet = false;
+      Object.keys(projekt.assets).forEach(function (id) {
+        window.T3KAssets.registriere(id, projekt.assets[id]);
+        window.T3KAssets.speichereInDb(id).catch(function () {
+          if (!quotaGemeldet) {
+            quotaGemeldet = true;
+            setStatus('Browser-Speicher voll — das Projekt ist geladen, überlebt aber kein Neuladen.', true);
+          }
+        });
+      });
+      zustand.dok = D.deserialisiere(JSON.stringify(projekt.dok));
+      zustand.historie = H.neueHistorie(zustand.dok);
+      zustand.meshCache = {};
+      // Projektdatei kann Import-Knoten enthalten, deren Asset gar nicht
+      // mit eingebettet wurde (z.B. Datei von Hand editiert) -- die fliegen
+      // hier raus, bevor der Worker sie registriert bekommt.
+      var entfernt = entferneVerwaisteImporte(zustand.dok.objekte);
+      IO.speichereAutosave(D.serialisiere(zustand.dok));
+      setzeAuswahl([]);
+      zustand.viewport.versteckeSchnittebene();
+      zustand.viewport.leereTransparenz();
+      Promise.all(window.T3KAssets.alleIds().map(function (id) {
+        return frageAsset(id, window.T3KAssets.hole(id));
+      })).then(function () {
+        zeichneAlles();
+        aktualisiereWerkzeugleiste();
+        if (entfernt > 0) setStatus(meldungEntfernteImporte(entfernt), true);
+        else setStatus('Projekt «' + file.name + '» geöffnet.');
+      }).catch(function (err) {
+        setStatus('Projekt geladen, aber Modelle fehlen (' + err.message + ').', true);
+      });
+    };
+    reader.readAsText(file);
+  }
+
+  // --- Auswahl, Panel, Werkzeugleiste, Undo/Redo --------------------------
+
+  var PARAM_LABELS = {
+    breite: 'Breite (mm)', tiefe: 'Tiefe (mm)', hoehe: 'Höhe (mm)',
+    durchmesser: 'Ø (mm)', durchmesserUnten: 'Ø unten (mm)', durchmesserOben: 'Ø oben (mm)',
+    seite: 'Seitenlänge (mm)', dicke: 'Dicke (mm)', wand: 'Wandstärke (mm)'
+  };
+
+  // Inline-SVGs: kein Icon-Font auf der Seite. currentColor folgt dem Button.
+  var SVG_AUGE_AUF = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">' +
+    '<path d="M12 5c-5 0-9.3 3.1-11 7 1.7 3.9 6 7 11 7s9.3-3.1 11-7c-1.7-3.9-6-7-11-7z" fill="none" stroke="currentColor" stroke-width="2"/>' +
+    '<circle cx="12" cy="12" r="3" fill="currentColor"/></svg>';
+  var SVG_AUGE_ZU = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">' +
+    '<path d="M12 5c-5 0-9.3 3.1-11 7 1.7 3.9 6 7 11 7s9.3-3.1 11-7c-1.7-3.9-6-7-11-7z" fill="none" stroke="currentColor" stroke-width="2"/>' +
+    '<line x1="4" y1="20" x2="20" y2="4" stroke="currentColor" stroke-width="2"/></svg>';
+  var SVG_PAPIERKORB = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">' +
+    '<path d="M4 7h16M10 4h4M7 7l1 13h8l1-13M10 11v6m4-6v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+  var SVG_ROENTGEN_AUS = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">' +
+    '<rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/></svg>';
+  var SVG_ROENTGEN_AN = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">' +
+    '<rect x="5" y="5" width="14" height="14" rx="2" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-dasharray="3 2"/></svg>';
+
+  // Ersetzt einen Dokument-Knoten durch importierte Teile (Weltkoordinaten).
+  // Jedes Teil {vertProperties, triVerts, wasserdicht?} wird als zentriertes
+  // Asset registriert (Store + Worker + IndexedDB), der Welt-Offset wandert
+  // in transform.position. Schnitt-Teile tragen kein Flag -> wasserdicht.
+  // Aufrufer setzt danach Auswahl/Status und ruft nachAenderung().
+  function ersetzeDurchTeile(knoten, teile) {
+    var quotaGemeldet = false;
+    var neueIds = [];
+    teile.forEach(function (t, i) {
+      var mitte = IO.bboxMitte(t.vertProperties);
+      var zentriert = IO.transformiereVertices(t.vertProperties, D.matAusTransform({
+        position: [-mitte[0], -mitte[1], -mitte[2]], rotation: [0, 0, 0], skalierung: [1, 1, 1]
+      }));
+      var assetId = window.T3KAssets.neueAssetId();
+      var name = knoten.name + ' (Teil ' + (i + 1) + ')';
+      var wasserdicht = t.wasserdicht !== false;
+      var eintrag = { name: name, vertProperties: zentriert, triVerts: t.triVerts, wasserdicht: wasserdicht };
+      window.T3KAssets.registriere(assetId, eintrag);
+      // Auch im Worker registrieren, sonst kennt die dortige Asset-Registry
+      // das Teil nicht und Gruppieren/Export werfen "Importiertes Modell
+      // nicht gefunden" (frageAsset kopiert die Arrays selbst per slice;
+      // Worker-Messages sind FIFO, spaetere Anfragen sehen die Registrierung
+      // also garantiert).
+      frageAsset(assetId, eintrag).catch(function () {
+        setStatus('Teil konnte nicht für die Verrechnung registriert werden.', true);
+      });
+      window.T3KAssets.speichereInDb(assetId).catch(function () {
+        if (!quotaGemeldet) {
+          quotaGemeldet = true;
+          setStatus('Browser-Speicher voll — die Teile sind da, überleben aber kein Neuladen. Sichere dein Projekt als Datei.', true);
+        }
+      });
+      var k = D.neuerImport(zustand.dok, name, assetId, t.triVerts.length / 3, wasserdicht);
+      k.transform.position = [rund2(mitte[0]), rund2(mitte[1]), rund2(mitte[2])];
+      D.setzeFarbe(zustand.dok, k.id, knoten.farbe);
+      neueIds.push(k.id);
+    });
+    D.entferneKnoten(zustand.dok, knoten.id);
+    return { neueIds: neueIds, quotaGemeldet: quotaGemeldet };
+  }
+
+  // --- Schnitt-Modus (Cut-Tool) -------------------------------------------
+
+  function starteSchnittModus() {
+    var zielId = zustand.auswahl[0];
+    if (!zustand.viewport.zeigeSchnittebene(zielId, zustand.letzteSchnittPose)) {
+      setStatus('Das Objekt ist noch nicht fertig berechnet — einen Moment.', true);
+      return;
+    }
+    zustand.schnitt = { zielId: zielId };
+    $('btn-schneiden').classList.add('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+    zeichnePanel();
+    setStatus('Ebene positionieren, dann «Schnitt ausführen».');
+  }
+
+  // Die Pose wird IMMER gemerkt -- auch bei Abbrechen/Esc startet das
+  // naechste Schneiden dort, wo die Ebene zuletzt stand.
+  function beendeSchnittModus() {
+    if (!zustand.schnitt) return;
+    var ebene = zustand.viewport.holeSchnittebene();
+    if (ebene) zustand.letzteSchnittPose = { position: ebene.position, rotation: ebene.rotation };
+    zustand.schnitt = null;
+    zustand.viewport.versteckeSchnittebene();
+    $('btn-schneiden').classList.remove('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+  }
+
+  function brichSchnittAb() {
+    if (!zustand.schnitt) return;
+    beendeSchnittModus();
+    zustand.viewport.setzeAuswahl(zustand.auswahl);   // Gizmo zurueck ans Objekt
+    zeichnePanel();
+  }
+
+  function fuehreSchnittAus() {
+    var s = zustand.schnitt;
+    if (!s) return;
+    var knoten = D.findeKnoten(zustand.dok, s.zielId);
+    var ebene = zustand.viewport.holeSchnittebene();
+    if (!knoten || !ebene) { brichSchnittAb(); return; }
+    setStatus('Wird geschnitten …');
+    frageSchnitt(knoten, ebene.normal, ebene.offset).then(function (teile) {
+      if (zustand.schnitt !== s) return;   // Modus inzwischen beendet oder neu gestartet
+      if (!teile || teile.length < 2) {
+        setStatus('Die Ebene trifft das Objekt nicht — nichts geschnitten.', true);
+        return;
+      }
+      var erg = ersetzeDurchTeile(knoten, teile);
+      beendeSchnittModus();
+      setzeAuswahl(erg.neueIds);
+      nachAenderung();
+      if (!erg.quotaGemeldet) setStatus('In ' + teile.length + ' Teile geschnitten.');
+    }).catch(function (err) {
+      if (zustand.schnitt !== s) return;   // Modus inzwischen beendet oder neu gestartet
+      setStatus('Schneiden fehlgeschlagen (' + err.message + ') — dein Modell ist unverändert.', true);
+    });
+  }
+
+  // --- Strecken-Modus -------------------------------------------------------
+  // Phase 1: Schnittebene positionieren (gleiche Ebenen-UI wie Schneiden).
+  // Phase 2: Live-Vorschau — die zwei Haelften wandern symmetrisch von der
+  // Ebene weg, die Luecke fuellt die Extrusion des Querschnitts; Scrollrad
+  // oder Panel-Feld steuern die Breite, «Fertig» rechnet das finale Teil.
+
+  var STRECKEN_BREITE = 10;   // Startbreite in mm
+
+  function starteStreckenModus() {
+    var zielId = zustand.auswahl[0];
+    // Bewusst OHNE letzteSchnittPose: die Ebene startet immer zentriert
+    // auf dem gewaehlten Objekt (die gemerkte Pose des letzten Schnitts
+    // kann bei einem anderen Objekt irgendwo im Leeren liegen).
+    if (!zustand.viewport.zeigeSchnittebene(zielId, null)) {
+      setStatus('Das Objekt ist noch nicht fertig berechnet — einen Moment.', true);
+      return;
+    }
+    zustand.strecken = { zielId: zielId, phase: 1, breite: STRECKEN_BREITE, laeuft: false };
+    $('btn-strecken').classList.add('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+    zeichnePanel();
+    setStatus('Ebene positionieren, dann «Weiter».');
+  }
+
+  function beendeStreckenModus() {
+    if (!zustand.strecken) return;
+    zustand.strecken = null;
+    zustand.viewport.versteckeSchnittebene();
+    zustand.viewport.beendeStreckVorschau();
+    $('btn-strecken').classList.remove('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+  }
+
+  function brichStreckenAb() {
+    if (!zustand.strecken) return;
+    beendeStreckenModus();
+    zustand.viewport.setzeAuswahl(zustand.auswahl);   // Gizmo zurueck ans Objekt
+    zeichnePanel();
+  }
+
+  function starteStreckenPhase2() {
+    var s = zustand.strecken;
+    if (!s || s.laeuft) return;
+    var knoten = D.findeKnoten(zustand.dok, s.zielId);
+    var ebene = zustand.viewport.holeSchnittebene();
+    if (!knoten || !ebene) { brichStreckenAb(); return; }
+    s.laeuft = true;
+    setStatus('Schnitt wird vorbereitet …');
+    frageStreckenVorschau(knoten, ebene.normal, ebene.offset).then(function (v) {
+      if (zustand.strecken !== s) return;   // Modus inzwischen beendet
+      s.laeuft = false;
+      s.phase = 2;
+      s.normal = ebene.normal;
+      s.offset = ebene.offset;
+      zustand.viewport.versteckeSchnittebene();
+      zustand.viewport.starteStreckVorschau(s.zielId, v, ebene.normal, ebene.offset, s.breite);
+      zeichnePanel();
+      setStatus('Scrollen im Viewport oder Feld: Breite einstellen — dann «Fertig».');
+    }).catch(function (err) {
+      if (zustand.strecken !== s) return;
+      s.laeuft = false;
+      setStatus('Strecken nicht möglich (' + err.message + ') — Ebene anpassen oder abbrechen.', true);
+    });
+  }
+
+  function fuehreStreckenAus() {
+    var s = zustand.strecken;
+    if (!s || s.phase !== 2 || s.laeuft) return;
+    var knoten = D.findeKnoten(zustand.dok, s.zielId);
+    if (!knoten) { brichStreckenAb(); return; }
+    s.laeuft = true;
+    setStatus('Wird gestreckt …');
+    frageStrecken(knoten, s.normal, s.offset, s.breite).then(function (t) {
+      if (zustand.strecken !== s) return;
+      var breite = s.breite;
+      beendeStreckenModus();
+      var k = ersetzeDurchErgebnis(knoten, t, knoten.name);
+      setzeAuswahl([k.id]);
+      nachAenderung();
+      setStatus('Gestreckt: +' + breite + ' mm.');
+    }).catch(function (err) {
+      if (zustand.strecken !== s) return;
+      s.laeuft = false;
+      setStatus('Strecken fehlgeschlagen (' + err.message + ') — dein Modell ist unverändert.', true);
+    });
+  }
+
+  // Breite aus dem Viewport (Scrollrad) -- Panel-Feld direkt nachziehen,
+  // ohne zeichnePanel (das wuerde dem Feld den Fokus stehlen)
+  function setzeStreckBreite(breite) {
+    var s = zustand.strecken;
+    if (!s || s.phase !== 2) return;
+    s.breite = Math.max(0, Math.round(breite * 10) / 10);
+    zustand.viewport.setzeStreckBreite(s.breite);
+    var feld = $('k3d-streck-breite');
+    if (feld) feld.value = s.breite;
+  }
+
+  // --- Aushoehlen/Aufdicken (Offset-Modus) --------------------------------
+
+  function starteOffsetModus(richtung) {
+    if (zustand.offset) beendeOffsetModus();
+    zustand.offset = { richtung: richtung, zielId: zustand.auswahl[0], wandstaerke: 2 };
+    $(richtung === 'innen' ? 'btn-aushoehlen' : 'btn-aufdicken').classList.add('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+    zeichnePanel();
+    setStatus('Wandstärke wählen, dann «Ausführen».');
+  }
+
+  function beendeOffsetModus() {
+    if (!zustand.offset) return;
+    zustand.offset = null;
+    $('btn-aushoehlen').classList.remove('k3d-aktiv');
+    $('btn-aufdicken').classList.remove('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+  }
+
+  function brichOffsetAb() {
+    if (!zustand.offset) return;
+    beendeOffsetModus();
+    zeichnePanel();
+  }
+
+  // Worker-Ergebnis (Weltkoordinaten) als neuen Import-Knoten an der
+  // Listenposition des Originals einsetzen; Original entfernen.
+  function ersetzeDurchErgebnis(knoten, t, name) {
+    var mitte = IO.bboxMitte(t.vertProperties);
+    var zentriert = IO.transformiereVertices(t.vertProperties, D.matAusTransform({
+      position: [-mitte[0], -mitte[1], -mitte[2]], rotation: [0, 0, 0], skalierung: [1, 1, 1]
+    }));
+    var assetId = window.T3KAssets.neueAssetId();
+    var eintrag = { name: name, vertProperties: zentriert, triVerts: t.triVerts, wasserdicht: true };
+    window.T3KAssets.registriere(assetId, eintrag);
+    // Auch im Worker registrieren, sonst kennt die dortige Asset-Registry
+    // das Ergebnis nicht und Gruppieren/Export werfen "Importiertes Modell
+    // nicht gefunden" (frageAsset kopiert die Arrays selbst per slice).
+    frageAsset(assetId, eintrag).catch(function () {
+      setStatus('Ergebnis konnte nicht für die Verrechnung registriert werden.', true);
+    });
+    window.T3KAssets.speichereInDb(assetId).catch(function () {
+      setStatus('Browser-Speicher voll — das Ergebnis ist da, überlebt aber kein Neuladen. Sichere dein Projekt als Datei.', true);
+    });
+    var k = D.neuerImport(zustand.dok, name, assetId, t.triVerts.length / 3, true);
+    k.transform.position = [rund2(mitte[0]), rund2(mitte[1]), rund2(mitte[2])];
+    D.setzeFarbe(zustand.dok, k.id, knoten.farbe);
+    D.setzeSichtbar(zustand.dok, k.id, knoten.sichtbar !== false);
+    // Roentgen-Zustand ist reiner Viewport-Zustand (nicht im Dokument, siehe
+    // setzeTransparenz) und wird sonst NICHT vererbt: neuerImport erzeugt eine
+    // neue Id, die alte fliegt unten aus vp.transparente. setzeTransparenz
+    // early-returnt zwar mangels Mesh (existiert fuer die neue Id noch nicht),
+    // setzt aber vorher die Map -- materialFuer liest sie beim Mesh-Bau.
+    if (zustand.viewport.transparente[knoten.id]) zustand.viewport.setzeTransparenz(k.id, true);
+    // an der Listenposition des Originals einsetzen statt hinten anhaengen
+    var altIdx = zustand.dok.objekte.indexOf(knoten);
+    var neuIdx = zustand.dok.objekte.indexOf(k);
+    if (altIdx >= 0 && neuIdx >= 0) {
+      zustand.dok.objekte.splice(neuIdx, 1);
+      zustand.dok.objekte.splice(altIdx, 0, k);
+    }
+    D.entferneKnoten(zustand.dok, knoten.id);
+    return k;
+  }
+
+  function fuehreOffsetAus() {
+    var o = zustand.offset;
+    if (!o) return;
+    var knoten = D.findeKnoten(zustand.dok, o.zielId);
+    if (!knoten) { brichOffsetAb(); return; }
+    var w = o.wandstaerke;
+    if (!isFinite(w) || w < 0.2) { setStatus('Wandstärke muss mindestens 0.2 mm sein.', true); return; }
+    var innen = o.richtung === 'innen';
+    setStatus(innen ? 'Wird ausgehöhlt …' : 'Wird aufgedickt …');
+    frageOffset(knoten, o.richtung, w).then(function (t) {
+      if (zustand.offset !== o) return;   // Modus inzwischen beendet oder neu gestartet
+      var k = ersetzeDurchErgebnis(knoten, t, knoten.name + (innen ? ' ausgehöhlt' : ' aufgedickt'));
+      beendeOffsetModus();
+      setzeAuswahl([k.id]);
+      if (innen) starteKanalPhase(k.id, w);
+      nachAenderung();
+      setStatus(innen
+        ? 'Ausgehöhlt (Wand ' + w + ' mm). Stelle anklicken, um einen Entleerungskanal zu bohren — oder «Fertig».'
+        : 'Aufgedickt (' + w + ' mm Wand aussen ergänzt).');
+    }).catch(function (err) {
+      if (zustand.offset !== o) return;   // Modus inzwischen beendet oder neu gestartet
+      setStatus((innen ? 'Aushöhlen' : 'Aufdicken') + ' fehlgeschlagen (' + err.message + ') — dein Modell ist unverändert.', true);
+    });
+  }
+
+  // --- Entleerungskanal (Phase nach dem Aushoehlen) ------------------------
+
+  function starteKanalPhase(zielId, wandstaerke) {
+    zustand.kanal = { zielId: zielId, wandstaerke: wandstaerke, durchmesser: KANAL_DURCHMESSER,
+                      form: 'loch', laeuft: false };
+    $('btn-aushoehlen').classList.add('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+    zeichnePanel();
+    // Der Viewport-Modus startet erst, wenn das Mesh des neuen Knotens
+    // bereit ist -- siehe beiMeshBereit.
+  }
+
+  function beendeKanalPhase() {
+    if (!zustand.kanal) return;
+    zustand.kanal = null;
+    zustand.viewport.beendeKanalModus();
+    $('btn-aushoehlen').classList.remove('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+  }
+
+  function brichKanalAb() {
+    if (!zustand.kanal) return;
+    beendeKanalPhase();
+    zustand.viewport.setzeAuswahl(zustand.auswahl);   // Gizmo zurueck ans Objekt
+    zeichnePanel();
+  }
+
+  // --- Anlegen (Flaeche an Flaeche) ---------------------------------------
+
+  function starteAnlegenModus() {
+    var zielId = zustand.auswahl[0];
+    var fehler = zustand.viewport.starteAnlegeModus(zielId);
+    if (fehler) { setStatus(fehler, true); return; }
+    zustand.anlegen = { zielId: zielId, phase: 1 };
+    $('btn-anlegen').classList.add('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+    zeichnePanel();
+    setStatus('Fläche am ausgewählten Objekt anklicken.');
+  }
+
+  function beendeAnlegenModus() {
+    if (!zustand.anlegen) return;
+    zustand.anlegen = null;
+    zustand.viewport.beendeAnlegeModus();   // idempotent, auch nach Erfolg ok
+    $('btn-anlegen').classList.remove('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+  }
+
+  function brichAnlegenAb() {
+    if (!zustand.anlegen) return;
+    beendeAnlegenModus();
+    zustand.viewport.setzeAuswahl(zustand.auswahl);   // Gizmo zurueck ans Objekt
+    zeichnePanel();
+  }
+
+  function klickAufZeile(id, e) {
+    var alle = zustand.dok.objekte.map(function (k) { return k.id; });
+    var neu;
+    if (e.shiftKey && zustand.listenAnker && alle.indexOf(zustand.listenAnker) >= 0) {
+      var a = alle.indexOf(zustand.listenAnker), b = alle.indexOf(id);
+      neu = alle.slice(Math.min(a, b), Math.max(a, b) + 1);
+    } else if (e.ctrlKey || e.metaKey) {
+      neu = zustand.auswahl.indexOf(id) >= 0
+        ? zustand.auswahl.filter(function (x) { return x !== id; })
+        : zustand.auswahl.concat([id]);
+      zustand.listenAnker = id;
+    } else {
+      // Klick auf die bereits aktive (aufgeklappte) Zeile klappt sie wieder zu
+      neu = (zustand.auswahl.length === 1 && zustand.auswahl[0] === id) ? [] : [id];
+    }
+    setzeAuswahl(neu);
+  }
+
+  function setzeAuswahl(ids, quelle) {
+    if (zustand.schnitt) brichSchnittAb();
+    if (zustand.strecken) brichStreckenAb();
+    if (zustand.offset) brichOffsetAb();
+    if (zustand.kanal && !(ids.length === 1 && ids[0] === zustand.kanal.zielId)) brichKanalAb();
+    if (zustand.anlegen) brichAnlegenAb();
+    zustand.auswahl = ids;
+    if (ids.length === 1) zustand.listenAnker = ids[0];
+    zustand.viewport.setzeAuswahl(ids);
+    zeichnePanel();
+    aktualisiereWerkzeugleiste();
+    if (quelle === 'viewport' && ids.length === 1) {
+      var zeile = document.querySelector('#k3d-panel-inhalt .k3d-zeile[data-id="' + ids[0] + '"]');
+      if (zeile) zeile.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  // Wertet einen einfachen Rechenausdruck aus: + - * /, Klammern, Dezimal-
+  // punkt oder -komma. Rekursiver Abstieg, KEIN eval. Liefert null bei
+  // ungueltiger Eingabe -- der Aufrufer setzt dann den alten Wert zurueck.
+  function rechne(text) {
+    var s = String(text).replace(/,/g, '.').replace(/\s+/g, '');
+    if (!s || /[^0-9.+\-*/()]/.test(s)) return null;
+    var pos = 0;
+    function ausdruck() {
+      var w = term();
+      while (w !== null && (s[pos] === '+' || s[pos] === '-')) {
+        var op = s[pos++];
+        var r = term();
+        if (r === null) return null;
+        w = op === '+' ? w + r : w - r;
+      }
+      return w;
+    }
+    function term() {
+      var w = faktor();
+      while (w !== null && (s[pos] === '*' || s[pos] === '/')) {
+        var op = s[pos++];
+        var r = faktor();
+        if (r === null) return null;
+        w = op === '*' ? w * r : w / r;
+      }
+      return w;
+    }
+    function faktor() {
+      if (s[pos] === '+') { pos++; return faktor(); }
+      if (s[pos] === '-') { pos++; var f = faktor(); return f === null ? null : -f; }
+      if (s[pos] === '(') {
+        pos++;
+        var w = ausdruck();
+        if (w === null || s[pos] !== ')') return null;
+        pos++;
+        return w;
+      }
+      var m = /^\d*\.?\d+/.exec(s.slice(pos));
+      if (!m) return null;
+      pos += m[0].length;
+      return parseFloat(m[0]);
+    }
+    var erg = ausdruck();
+    if (erg === null || pos !== s.length || !isFinite(erg)) return null;
+    return erg;
+  }
+
+  // Scrollrad auf Zahlenfeldern: ein Tick = ±1, die Seite scrollt nicht mit.
+  // Bewusst EIN Listener auf document statt je Feld: das Panel wird nach jeder
+  // Aenderung neu aufgebaut, und Chrome latcht die laufende Scroll-Geste aufs
+  // alte, entfernte Input -- weitere Ticks gingen dann an die Seite.
+  document.addEventListener('wheel', function (ev) {
+    var el = document.elementFromPoint(ev.clientX, ev.clientY);
+    if (!el || el.tagName !== 'INPUT' || !el.classList.contains('k3d-zahl')) return;
+    if (!el.closest('#k3d-panel-inhalt')) return;
+    ev.preventDefault();
+    // rechne statt parseFloat: auch ein halb getippter Ausdruck wird
+    // aufgeloest statt beim ersten Operator abgeschnitten
+    var v = rechne(el.value);
+    if (v === null) return;
+    // Schrittweite: 1 pro Tick, mit Shift x10, mit Ctrl /10.
+    // Bei gedruecktem Shift melden Browser den Tick oft als deltaX.
+    var delta = ev.deltaY !== 0 ? ev.deltaY : ev.deltaX;
+    if (delta === 0) return;
+    var schritt = ev.shiftKey ? 10 : (ev.ctrlKey || ev.metaKey) ? 0.1 : 1;
+    el.value = Math.round((v + (delta < 0 ? schritt : -schritt)) * 10) / 10;
+    el.dispatchEvent(new Event('change'));
+  }, { passive: false });
+
+  function zeichnePanel() {
+    zustand.liveFelder = null;
+    var inhalt = $('k3d-panel-inhalt');
+    inhalt.innerHTML = '';
+    if (zustand.schnitt || (zustand.strecken && zustand.strecken.phase === 1)) {
+      var istStrecken1 = !zustand.schnitt;
+      var e = zustand.viewport.holeSchnittebene();
+      if (!e) return;
+      var titelE = document.createElement('p');
+      titelE.textContent = istStrecken1 ? 'Strecken — Schnittebene' : 'Schnittebene';
+      inhalt.appendChild(titelE);
+      function ebenenFeld(beschriftung, wert, beiAenderung) {
+        var l = document.createElement('label');
+        l.textContent = beschriftung;
+        var i = document.createElement('input');
+        i.type = 'text';           // text statt number: erlaubt Rechenausdruecke
+        i.inputMode = 'decimal';
+        i.className = 'k3d-zahl';
+        i.value = wert;
+        i.addEventListener('change', function () {
+          var v = rechne(i.value);
+          if (v === null) { i.value = wert; return; }
+          beiAenderung(v);
+          zeichnePanel();
+        });
+        l.appendChild(i);
+        inhalt.appendChild(l);
+      }
+      ['X', 'Y', 'Z'].forEach(function (achse, i) {
+        ebenenFeld('Position ' + achse + ' (mm)', e.position[i], function (v) {
+          var akt = zustand.viewport.holeSchnittebene();
+          akt.position[i] = v;
+          zustand.viewport.setzeSchnittebeneTransform(akt.position, akt.rotation);
+        });
+      });
+      ['X', 'Y', 'Z'].forEach(function (achse, i) {
+        ebenenFeld('Drehung ' + achse + ' (°)', e.rotation[i], function (v) {
+          var akt = zustand.viewport.holeSchnittebene();
+          akt.rotation[i] = v;
+          zustand.viewport.setzeSchnittebeneTransform(akt.position, akt.rotation);
+        });
+      });
+      var bAus = document.createElement('button');
+      bAus.type = 'button';
+      bAus.className = 'btn btn-primary';
+      bAus.textContent = istStrecken1 ? 'Weiter' : 'Schnitt ausführen';
+      bAus.addEventListener('click', istStrecken1 ? starteStreckenPhase2 : fuehreSchnittAus);
+      inhalt.appendChild(bAus);
+      var bAbbr = document.createElement('button');
+      bAbbr.type = 'button';
+      bAbbr.className = 'btn btn-default';
+      bAbbr.textContent = 'Abbrechen';
+      bAbbr.addEventListener('click', function () {
+        if (istStrecken1) { brichStreckenAb(); setStatus('Strecken abgebrochen.'); }
+        else { brichSchnittAb(); setStatus('Schneiden abgebrochen.'); }
+      });
+      inhalt.appendChild(bAbbr);
+      return;
+    }
+    if (zustand.strecken && zustand.strecken.phase === 2) {
+      var titelSt = document.createElement('p');
+      titelSt.textContent = 'Strecken';
+      inhalt.appendChild(titelSt);
+      var hinweisSt = document.createElement('p');
+      hinweisSt.className = 'k3d-panel-leer';
+      hinweisSt.textContent = 'Scrollrad im Viewport ändert die Breite (Shift ×10, Ctrl ×0.1) — die Lücke wird mit dem Querschnitt gefüllt.';
+      inhalt.appendChild(hinweisSt);
+      var lb = document.createElement('label');
+      lb.textContent = 'Breite (mm)';
+      var ib = document.createElement('input');
+      ib.type = 'text';             // text statt number: erlaubt Rechenausdruecke
+      ib.inputMode = 'decimal';
+      ib.className = 'k3d-zahl';
+      ib.id = 'k3d-streck-breite';
+      ib.value = zustand.strecken.breite;
+      ib.addEventListener('change', function () {
+        var v = rechne(ib.value);
+        if (v === null || !zustand.strecken) { ib.value = zustand.strecken ? zustand.strecken.breite : ''; return; }
+        setzeStreckBreite(v);
+        ib.value = zustand.strecken.breite;
+      });
+      lb.appendChild(ib);
+      inhalt.appendChild(lb);
+      var bF = document.createElement('button');
+      bF.type = 'button';
+      bF.className = 'btn btn-primary';
+      bF.textContent = 'Fertig';
+      bF.addEventListener('click', fuehreStreckenAus);
+      inhalt.appendChild(bF);
+      var bA2 = document.createElement('button');
+      bA2.type = 'button';
+      bA2.className = 'btn btn-default';
+      bA2.textContent = 'Abbrechen';
+      bA2.addEventListener('click', function () {
+        brichStreckenAb();
+        setStatus('Strecken abgebrochen.');
+      });
+      inhalt.appendChild(bA2);
+      return;
+    }
+    if (zustand.offset) {
+      var o = zustand.offset;
+      var titelO = document.createElement('p');
+      titelO.textContent = o.richtung === 'innen' ? 'Aushöhlen' : 'Aufdicken';
+      inhalt.appendChild(titelO);
+      var lw = document.createElement('label');
+      lw.textContent = 'Wandstärke (mm)';
+      var iw = document.createElement('input');
+      iw.type = 'text';            // text statt number: erlaubt Rechenausdruecke
+      iw.inputMode = 'decimal';
+      iw.className = 'k3d-zahl';
+      iw.value = o.wandstaerke;
+      iw.addEventListener('change', function () {
+        var v = rechne(iw.value);
+        if (v === null) { iw.value = o.wandstaerke; return; }
+        o.wandstaerke = Math.max(0.2, v);
+        iw.value = o.wandstaerke;
+      });
+      lw.appendChild(iw);
+      inhalt.appendChild(lw);
+      var bO = document.createElement('button');
+      bO.type = 'button';
+      bO.className = 'btn btn-primary';
+      bO.textContent = 'Ausführen';
+      bO.addEventListener('click', fuehreOffsetAus);
+      inhalt.appendChild(bO);
+      var bOA = document.createElement('button');
+      bOA.type = 'button';
+      bOA.className = 'btn btn-default';
+      bOA.textContent = 'Abbrechen';
+      bOA.addEventListener('click', function () {
+        brichOffsetAb();
+        setStatus(o.richtung === 'innen' ? 'Aushöhlen abgebrochen.' : 'Aufdicken abgebrochen.');
+      });
+      inhalt.appendChild(bOA);
+      return;
+    }
+    if (zustand.kanal) {
+      var istFlaecheForm = zustand.kanal.form === 'flaeche';
+      var titelK = document.createElement('p');
+      titelK.textContent = 'Entleerungskanal';
+      inhalt.appendChild(titelK);
+      var hinweisK = document.createElement('p');
+      hinweisK.className = 'k3d-panel-leer';
+      hinweisK.textContent = istFlaecheForm
+        ? 'Ebene Fläche anklicken — sie wird komplett bis in den Hohlraum ausgeschnitten. Mehrere Öffnungen möglich.'
+        : 'Stelle auf der Oberfläche anklicken — dort wird ein rundes Loch bis in den Hohlraum gebohrt. Mehrere Kanäle möglich.';
+      inhalt.appendChild(hinweisK);
+      var lfk = document.createElement('label');
+      lfk.textContent = 'Öffnung';
+      var selK = document.createElement('select');
+      [['loch', 'Rundes Loch'], ['flaeche', 'Fläche ausschneiden']].forEach(function (o) {
+        var opt = document.createElement('option');
+        opt.value = o[0];
+        opt.textContent = o[1];
+        selK.appendChild(opt);
+      });
+      selK.value = zustand.kanal.form;
+      selK.addEventListener('change', function () {
+        if (!zustand.kanal) return;
+        zustand.kanal.form = selK.value;
+        zustand.viewport.setzeKanalForm(selK.value);
+        zeichnePanel();   // Hinweis + Durchmesser-Feld nachziehen
+      });
+      lfk.appendChild(selK);
+      inhalt.appendChild(lfk);
+      if (!istFlaecheForm) {
+      var ld = document.createElement('label');
+      ld.textContent = 'Lochdurchmesser (mm)';
+      var idm = document.createElement('input');
+      idm.type = 'text';            // text statt number: erlaubt Rechenausdruecke
+      idm.inputMode = 'decimal';
+      idm.className = 'k3d-zahl';
+      idm.value = zustand.kanal.durchmesser;
+      idm.addEventListener('change', function () {
+        var v = rechne(idm.value);
+        if (v === null || !zustand.kanal) { idm.value = zustand.kanal ? zustand.kanal.durchmesser : ''; return; }
+        zustand.kanal.durchmesser = Math.max(0.2, v);
+        idm.value = zustand.kanal.durchmesser;
+        zustand.viewport.setzeKanalDurchmesser(zustand.kanal.durchmesser);
+      });
+      ld.appendChild(idm);
+      inhalt.appendChild(ld);
+      }
+      var bK = document.createElement('button');
+      bK.type = 'button';
+      bK.className = 'btn btn-primary';
+      bK.textContent = 'Fertig';
+      bK.addEventListener('click', function () {
+        brichKanalAb();
+        setStatus('Entleerungskanal beendet.');
+      });
+      inhalt.appendChild(bK);
+      return;
+    }
+    if (zustand.anlegen) {
+      var titelAn = document.createElement('p');
+      titelAn.textContent = 'Anlegen';
+      inhalt.appendChild(titelAn);
+      var schritt = document.createElement('p');
+      schritt.className = 'k3d-panel-leer';
+      schritt.textContent = zustand.anlegen.phase === 1
+        ? 'Schritt 1: Fläche am ausgewählten Objekt anklicken.'
+        : 'Schritt 2: Zielfläche eines anderen Objekts oder die Arbeitsfläche anklicken.';
+      inhalt.appendChild(schritt);
+      var bAnAbbr = document.createElement('button');
+      bAnAbbr.type = 'button';
+      bAnAbbr.className = 'btn btn-default';
+      bAnAbbr.textContent = 'Abbrechen';
+      bAnAbbr.addEventListener('click', function () {
+        brichAnlegenAb();
+        setStatus('Anlegen abgebrochen.');
+      });
+      inhalt.appendChild(bAnAbbr);
+      return;
+    }
+    if (zustand.dok.objekte.length === 0) {
+      var p = document.createElement('p');
+      p.className = 'k3d-panel-leer';
+      p.textContent = 'Noch keine Objekte — wähle links einen Grundkörper.';
+      inhalt.appendChild(p);
+      return;
+    }
+    var liste = document.createElement('div');
+    liste.className = 'k3d-liste';
+    zustand.dok.objekte.forEach(function (k) {
+      liste.appendChild(baueZeile(k));
+      if (zustand.auswahl.length === 1 && zustand.auswahl[0] === k.id) {
+        liste.appendChild(baueDetails(k));
+      }
+    });
+    inhalt.appendChild(liste);
+  }
+
+  function baueZeile(k) {
+    var zeile = document.createElement('div');
+    zeile.className = 'k3d-zeile' + (zustand.auswahl.indexOf(k.id) >= 0 ? ' k3d-zeile-aktiv' : '');
+    zeile.setAttribute('data-id', k.id);
+
+    var versteckt = k.sichtbar === false;
+    var auge = document.createElement('button');
+    auge.type = 'button';
+    auge.className = 'k3d-auge';
+    auge.title = versteckt ? 'Objekt einblenden' : 'Objekt ausblenden (nur Ansicht — Export bleibt vollständig)';
+    auge.innerHTML = versteckt ? SVG_AUGE_ZU : SVG_AUGE_AUF;
+    auge.addEventListener('click', function (e) {
+      e.stopPropagation();   // Auge-Klick aendert die Auswahl nicht
+      D.setzeSichtbar(zustand.dok, k.id, versteckt);
+      nachAenderung();
+      zeichnePanel();
+    });
+    zeile.appendChild(auge);
+    var istTransparent = !!(zustand.viewport && zustand.viewport.transparente[k.id]);
+    var roentgen = document.createElement('button');
+    roentgen.type = 'button';
+    roentgen.className = 'k3d-roentgen' + (istTransparent ? ' k3d-roentgen-aktiv' : '');
+    roentgen.title = istTransparent ? 'Wieder deckend darstellen'
+      : 'Transparent darstellen (nur Ansicht — zeigt Hohlräume)';
+    roentgen.innerHTML = istTransparent ? SVG_ROENTGEN_AN : SVG_ROENTGEN_AUS;
+    roentgen.addEventListener('click', function (e) {
+      e.stopPropagation();   // aendert die Auswahl nicht
+      zustand.viewport.setzeTransparenz(k.id, !istTransparent);
+      zeichnePanel();        // Icon-Zustand der Zeile auffrischen; kein nachAenderung: kein Dokument-Change
+    });
+    zeile.appendChild(roentgen);
+    if (versteckt) zeile.classList.add('k3d-zeile-versteckt');
+
+    var name = document.createElement('span');
+    name.className = 'k3d-zeile-name';
+    name.textContent = k.name + (k.istLoch ? ' (Negativ)' : '');
+    name.title = name.textContent;
+    zeile.appendChild(name);
+
+    var korb = document.createElement('button');
+    korb.type = 'button';
+    korb.className = 'k3d-papierkorb';
+    korb.title = 'Objekt löschen';
+    korb.innerHTML = SVG_PAPIERKORB;
+    korb.addEventListener('click', function (e) {
+      e.stopPropagation();   // Korb-Klick aendert die Auswahl nicht
+      if (!window.confirm('«' + k.name + '» löschen?')) return;
+      D.entferneKnoten(zustand.dok, k.id);
+      setzeAuswahl(zustand.auswahl.filter(function (x) { return x !== k.id; }));
+      nachAenderung();
+    });
+    zeile.appendChild(korb);
+
+    zeile.addEventListener('click', function (e) { klickAufZeile(k.id, e); });
+    return zeile;
+  }
+
+  // 16 kuratierte Farben, 8x2 im Akkordeon; Standard-Blau ist enthalten
+  var PALETTE = [
+    '#f2f2f2', '#b3b3b3', '#4d4d4d', '#1a1a1a',
+    '#d64541', '#e87e2d', '#e8c33d', '#4caf50',
+    '#1f7a33', '#26a69a', '#64b5f6', '#5a8dc8',
+    '#34558b', '#8e6cc0', '#e57fb1', '#8d6e63'
+  ];
+
+  function baueFarbwahl(k) {
+    var wrap = document.createElement('div');
+    wrap.className = 'k3d-farbwahl';
+    var titel = document.createElement('span');
+    titel.className = 'k3d-farbwahl-titel';
+    titel.textContent = 'Farbe';
+    wrap.appendChild(titel);
+    var kacheln = document.createElement('div');
+    kacheln.className = 'k3d-farben';
+    PALETTE.forEach(function (farbe) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'k3d-farbkachel' + (farbe === k.farbe ? ' aktiv' : '');
+      b.style.background = farbe;
+      b.title = farbe;
+      b.addEventListener('click', function () {
+        D.setzeFarbe(zustand.dok, k.id, farbe);
+        nachAenderung();
+        zeichnePanel();
+      });
+      kacheln.appendChild(b);
+    });
+    var frei = document.createElement('input');
+    frei.type = 'color';
+    frei.className = 'k3d-farbe-frei';
+    frei.value = /^#[0-9a-f]{6}$/i.test(k.farbe || '') ? k.farbe : D.STANDARD_FARBE;
+    frei.title = 'Eigene Farbe wählen';
+    // 'change' statt 'input': sonst wird jede Mausbewegung im
+    // Browser-Farbdialog ein eigener Undo-Schritt
+    frei.addEventListener('change', function () {
+      D.setzeFarbe(zustand.dok, k.id, frei.value);
+      nachAenderung();
+      zeichnePanel();
+    });
+    kacheln.appendChild(frei);
+    wrap.appendChild(kacheln);
+    return wrap;
+  }
+
+  function baueDetails(k) {
+    var dt = document.createElement('div');
+    dt.className = 'k3d-details';
+
+    var nameLabel = document.createElement('label');
+    nameLabel.textContent = 'Name';
+    var nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.maxLength = 60;
+    nameInput.value = k.name;
+    nameInput.addEventListener('change', function () {
+      var v = nameInput.value.trim();
+      if (!v) { nameInput.value = k.name; return; }   // leer -> alter Name bleibt
+      k.name = v;
+      nachAenderung();
+      zeichnePanel();
+    });
+    nameLabel.appendChild(nameInput);
+    dt.appendChild(nameLabel);
+    dt.appendChild(baueFarbwahl(k));
+
+    function feld(beschriftung, wert, beiAenderung) {
+      var l = document.createElement('label');
+      l.textContent = beschriftung;
+      var i = document.createElement('input');
+      i.type = 'text';             // text statt number: erlaubt Rechenausdruecke
+      i.inputMode = 'decimal';
+      i.className = 'k3d-zahl';
+      i.value = wert;
+      i.addEventListener('change', function () {
+        var v = rechne(i.value);
+        if (v === null) { i.value = wert; return; }
+        beiAenderung(v);
+        nachAenderung();
+        zeichnePanel();
+      });
+      l.appendChild(i);
+      dt.appendChild(l);
+      return i;
+    }
+
+    // Zielmass in mm setzt die Skalierung der Achse (Basis = unskalierte BBox).
+    // Import: BBox aus dem Asset; Gruppe: BBox des gemergten Meshes im Viewport.
+    var basis = null;
+    if (k.typ === 'import') {
+      var asset = window.T3KAssets.hole(k.params.assetId);
+      if (asset) basis = IO.bboxGroesse(asset.vertProperties);
+    } else if (k.typ === 'gruppe') {
+      basis = zustand.viewport.holeBasisGroesse(k.id);
+    }
+    // Referenzen fuer den Live-Sync waehrend des Gizmo-Drags
+    zustand.liveFelder = { id: k.id, basis: basis, groesse: [], position: [], drehung: [] };
+    if (basis) {
+      ['X', 'Y', 'Z'].forEach(function (achse, i) {
+        if (basis[i] <= 0) return;
+        zustand.liveFelder.groesse[i] = feld('Grösse ' + achse + ' (mm)', Math.round(basis[i] * k.transform.skalierung[i] * 10) / 10, function (v) {
+          k.transform.skalierung[i] = Math.max(v, 0.1) / basis[i];
+        });
+      });
+    }
+    if (k.typ === 'import') {
+      var info = document.createElement('p');
+      info.className = 'k3d-panel-leer';
+      info.textContent = k.params.dreiecke + ' Dreiecke · ' +
+        (k.params.wasserdicht ? 'wasserdicht' : 'nicht wasserdicht — nur platzieren und exportieren');
+      dt.appendChild(info);
+    } else if (k.typ !== 'gruppe') {
+      Object.keys(k.params).forEach(function (name) {
+        feld(PARAM_LABELS[name] || name, k.params[name], function (v) {
+          // Masse muessen positiv bleiben (Durchmesser oben 0 = Kegelspitze ist erlaubt)
+          k.params[name] = (name === 'durchmesserOben') ? Math.max(v, 0) : Math.max(v, 0.1);
+        });
+      });
+    }
+    ['X', 'Y', 'Z'].forEach(function (achse, i) {
+      zustand.liveFelder.position[i] = feld('Position ' + achse + ' (mm)', k.transform.position[i], function (v) { k.transform.position[i] = v; });
+    });
+    ['X', 'Y', 'Z'].forEach(function (achse, i) {
+      zustand.liveFelder.drehung[i] = feld('Drehung ' + achse + ' (°)', k.transform.rotation[i], function (v) { k.transform.rotation[i] = v; });
+    });
+    return dt;
+  }
+
+  function aktualisiereWerkzeugleiste() {
+    var n = zustand.auswahl.length;
+    var einzel = n === 1 ? D.findeKnoten(zustand.dok, zustand.auswahl[0]) : null;
+    var nichtWasserdicht = zustand.auswahl.some(function (id) {
+      var k = D.findeKnoten(zustand.dok, id);
+      return !!(k && D.enthaeltNichtWasserdicht(k));
+    });
+    var schnittAktiv = !!zustand.schnitt;
+    var offsetAktiv = !!zustand.offset;
+    var anlegenAktiv = !!zustand.anlegen;
+    var kanalAktiv = !!zustand.kanal;
+    var streckenAktiv = !!zustand.strecken;
+    var einzelVersteckt = !!(einzel && einzel.sichtbar === false);
+    var modusAktiv = schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv;
+    $('btn-schneiden').disabled = !schnittAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv);
+    $('btn-strecken').disabled = !streckenAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv);
+    $('btn-aushoehlen').disabled = !offsetAktiv && !kanalAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || streckenAktiv);
+    $('btn-aufdicken').disabled = !offsetAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || kanalAktiv || streckenAktiv);
+    $('btn-anlegen').disabled = !anlegenAktiv && (n !== 1 || einzelVersteckt || schnittAktiv || offsetAktiv || kanalAktiv || streckenAktiv);
+    // Bewusst OHNE pauschale nichtWasserdicht-Sperre: nicht-wasserdichte
+    // Importe sind der Haupt-Anwendungsfall (Multi-Shell-STLs). Nur Gruppen,
+    // die nicht-wasserdichte Kinder ENTHALTEN, bleiben gesperrt -- die
+    // muessten zum Trennen verrechnet werden, was dort nicht geht.
+    $('btn-auftrennen').disabled = modusAktiv || n !== 1 || !zustand.engineBereit ||
+      (nichtWasserdicht && !(einzel && einzel.typ === 'import'));
+    $('btn-loch').disabled = modusAktiv || n === 0 || nichtWasserdicht;
+    $('btn-gruppieren').disabled = modusAktiv || n < 2 || nichtWasserdicht;
+    $('btn-aufloesen').disabled = modusAktiv || !(einzel && einzel.typ === 'gruppe');
+    $('btn-duplizieren').disabled = modusAktiv || n !== 1;
+    $('btn-loeschen').disabled = modusAktiv || n === 0;
+    $('btn-undo').disabled = modusAktiv || !H.kannRueckgaengig(zustand.historie);
+    $('btn-redo').disabled = modusAktiv || !H.kannWiederholen(zustand.historie);
+  }
+
+  function undo() {
+    var dok = H.rueckgaengig(zustand.historie);
+    if (!dok) return;
+    zustand.dok = dok;
+    setzeAuswahl([]);
+    if (!IO.speichereAutosave(D.serialisiere(zustand.dok))) {
+      setStatus('Automatisches Speichern fehlgeschlagen (Speicher voll?). Lade dein Projekt als STL herunter.', true);
+    }
+    zeichneAlles();
+    aktualisiereWerkzeugleiste();
+  }
+
+  function redo() {
+    var dok = H.wiederholen(zustand.historie);
+    if (!dok) return;
+    zustand.dok = dok;
+    setzeAuswahl([]);
+    if (!IO.speichereAutosave(D.serialisiere(zustand.dok))) {
+      setStatus('Automatisches Speichern fehlgeschlagen (Speicher voll?). Lade dein Projekt als STL herunter.', true);
+    }
+    zeichneAlles();
+    aktualisiereWerkzeugleiste();
+  }
+
+  // --- Export, Warenkorb, Neues Projekt -----------------------------------
+
+  function exportiereVerrechnet(objekte, danach) {
+    if (objekte.length === 0) {
+      setStatus('Noch nichts zu exportieren — platziere zuerst einen Körper.', true);
+      return;
+    }
+    if (!zustand.engineBereit) {
+      setStatus('Die Engine lädt noch — einen Moment.', true);
+      return;
+    }
+    setStatus('Modell wird verrechnet …');
+    // Nicht wasserdichte Importe koennen nicht durch die CSG: ihre Dreiecke
+    // werden transformiert und roh ans Ergebnis angehaengt (STL erlaubt das).
+    var roh = [], verrechenbar = [];
+    objekte.forEach(function (k) {
+      if (k.typ === 'import' && !k.params.wasserdicht) roh.push(k); else verrechenbar.push(k);
+    });
+    var fertig = function (csgDaten) {
+      var teile = csgDaten ? [csgDaten] : [];
+      roh.forEach(function (k) {
+        var asset = window.T3KAssets.hole(k.params.assetId);
+        if (!asset) return;
+        teile.push({
+          vertProperties: IO.transformiereVertices(asset.vertProperties, D.matAusTransform(k.transform)),
+          triVerts: asset.triVerts
+        });
+      });
+      if (teile.length === 0) {
+        setStatus('Das Ergebnis ist leer — die Negative entfernen alles.', true);
+        return;
+      }
+      var m = IO.verbindeMeshes(teile);
+      setStatus('Bereit.');
+      danach(IO.baueBinaerSTL(m.vertProperties, m.triVerts));
+    };
+    if (verrechenbar.length === 0) { fertig(null); return; }
+    var wurzel = {
+      id: 'probe', typ: 'gruppe', istLoch: false,
+      transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] },
+      kinder: verrechenbar
+    };
+    frageMesh(wurzel).then(fertig).catch(function (err) {
+      setStatus('Verrechnen fehlgeschlagen (' + err.message + ').', true);
+    });
+  }
+
+  function exportiereSTL(danach) {
+    exportiereVerrechnet(zustand.dok.objekte, danach);
+  }
+
+  // Farbiger Export (OBJ/3MF): ein Mesh PRO Objekt, damit die Farben
+  // erhalten bleiben. Top-Level-Negative im Export-Umfang werden von jedem
+  // Solid abgezogen (gleiche Semantik wie der verschmolzene STL-Export);
+  // nicht wasserdichte Importe gehen roh mit ihrer Farbe mit.
+  function sammleFarbTeile(objekte) {
+    var loecher = objekte.filter(function (k) {
+      return k.istLoch && !(k.typ === 'import' && !k.params.wasserdicht);
+    });
+    var anfragen = [];
+    objekte.forEach(function (k) {
+      if (k.istLoch) return;   // Negative sind keine eigenen Koerper
+      if (k.typ === 'import' && !k.params.wasserdicht) {
+        var asset = window.T3KAssets.hole(k.params.assetId);
+        if (asset) {
+          anfragen.push(Promise.resolve({
+            name: k.name, farbe: k.farbe,
+            vertProperties: IO.transformiereVertices(asset.vertProperties, D.matAusTransform(k.transform)),
+            triVerts: asset.triVerts
+          }));
+        }
+        return;
+      }
+      var wurzel = {
+        id: 'export-' + k.id, typ: 'gruppe', istLoch: false,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] },
+        kinder: [k].concat(loecher)
+      };
+      anfragen.push(frageMesh(wurzel).then(function (daten) {
+        return daten ? { name: k.name, farbe: k.farbe,
+                         vertProperties: daten.vertProperties, triVerts: daten.triVerts } : null;
+      }));
+    });
+    return Promise.all(anfragen).then(function (teile) { return teile.filter(Boolean); });
+  }
+
+  function fuehreExportAus(umfang, format) {
+    var objekte = umfang === 'auswahl'
+      ? zustand.dok.objekte.filter(function (k) { return zustand.auswahl.indexOf(k.id) >= 0; })
+      : zustand.dok.objekte;
+    if (format === 'stl') {
+      exportiereVerrechnet(objekte, function (buf) { IO.downloadDatei(buf, 'teil3-konstruktion.stl'); });
+      return;
+    }
+    if (objekte.length === 0) {
+      setStatus('Noch nichts zu exportieren — platziere zuerst einen Körper.', true);
+      return;
+    }
+    setStatus('Modell wird verrechnet …');
+    sammleFarbTeile(objekte).then(function (teile) {
+      if (teile.length === 0) {
+        setStatus('Das Ergebnis ist leer — die Negative entfernen alles.', true);
+        return;
+      }
+      setStatus('Bereit.');
+      if (format === 'obj') {
+        var erg = IO.baueOBJ(teile, 'teil3-konstruktion.mtl');
+        IO.downloadDatei(erg.obj, 'teil3-konstruktion.obj', 'model/obj');
+        IO.downloadDatei(erg.mtl, 'teil3-konstruktion.mtl', 'text/plain');
+      } else {
+        IO.downloadDatei(IO.baue3MF(teile), 'teil3-konstruktion.3mf', 'model/3mf');
+      }
+    }).catch(function (err) {
+      setStatus('Verrechnen fehlgeschlagen (' + err.message + ').', true);
+    });
+  }
+
+  // Export-Dialog: zuerst Umfang (Szene/Auswahl) und Format waehlen.
+  function zeigeExportDialog() {
+    if (zustand.dok.objekte.length === 0) {
+      setStatus('Noch nichts zu exportieren — platziere zuerst einen Körper.', true);
+      return;
+    }
+    if (!zustand.engineBereit) {
+      setStatus('Die Engine lädt noch — einen Moment.', true);
+      return;
+    }
+    var altHinter = document.querySelector('.k3d-dialog-hinter');
+    if (altHinter) altHinter.remove();
+    var anzahlAuswahl = zustand.dok.objekte.filter(function (k) {
+      return zustand.auswahl.indexOf(k.id) >= 0;
+    }).length;
+    var hinter = document.createElement('div');
+    hinter.className = 'k3d-dialog-hinter';
+    var dialog = document.createElement('div');
+    dialog.className = 'k3d-dialog';
+    var titel = document.createElement('p');
+    titel.className = 'k3d-dialog-titel';
+    titel.textContent = 'Exportieren';
+    dialog.appendChild(titel);
+    function radioGruppe(legende, name, optionen) {
+      var fs = document.createElement('fieldset');
+      var lg = document.createElement('legend');
+      lg.textContent = legende;
+      fs.appendChild(lg);
+      optionen.forEach(function (o) {
+        var label = document.createElement('label');
+        var radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = name;
+        radio.value = o[0];
+        radio.checked = !!o[2];
+        radio.disabled = !!o[3];
+        label.appendChild(radio);
+        label.appendChild(document.createTextNode(o[1]));
+        if (o[3]) label.style.opacity = '0.5';
+        fs.appendChild(label);
+      });
+      dialog.appendChild(fs);
+      return fs;
+    }
+    radioGruppe('Umfang', 'k3d-export-umfang', [
+      ['szene', 'Ganze Szene (' + zustand.dok.objekte.length + ' Objekte)', anzahlAuswahl === 0],
+      ['auswahl', 'Nur Auswahl (' + anzahlAuswahl + ' Objekte)', anzahlAuswahl > 0, anzahlAuswahl === 0]
+    ]);
+    radioGruppe('Format', 'k3d-export-format', [
+      ['stl', 'STL', true],
+      ['obj', 'OBJ mit Farben (+ MTL-Datei)'],
+      ['3mf', '3MF mit Farben']
+    ]);
+    var knoepfe = document.createElement('div');
+    knoepfe.className = 'k3d-dialog-knoepfe';
+    var bAb = document.createElement('button');
+    bAb.type = 'button';
+    bAb.className = 'btn btn-default';
+    bAb.textContent = 'Abbrechen';
+    var bOk = document.createElement('button');
+    bOk.type = 'button';
+    bOk.className = 'btn btn-primary';
+    bOk.textContent = 'Exportieren';
+    knoepfe.appendChild(bAb);
+    knoepfe.appendChild(bOk);
+    dialog.appendChild(knoepfe);
+    hinter.appendChild(dialog);
+    function schliessen() {
+      hinter.remove();
+      document.removeEventListener('keydown', beiTaste);
+    }
+    function beiTaste(e) { if (e.key === 'Escape') schliessen(); }
+    document.addEventListener('keydown', beiTaste);
+    hinter.addEventListener('click', function (e) { if (e.target === hinter) schliessen(); });
+    bAb.addEventListener('click', schliessen);
+    bOk.addEventListener('click', function () {
+      var umfang = dialog.querySelector('input[name=k3d-export-umfang]:checked').value;
+      var format = dialog.querySelector('input[name=k3d-export-format]:checked').value;
+      schliessen();
+      fuehreExportAus(umfang, format);
+    });
+    // Im Vollbild werden Elemente ausserhalb des Fullscreen-Containers nicht
+    // gerendert -- darum an die Seite haengen, nicht an den Body.
+    (document.querySelector('.k3d-seite') || document.body).appendChild(hinter);
+  }
+
+  $('btn-download').addEventListener('click', zeigeExportDialog);
+
+  $('btn-warenkorb').addEventListener('click', function () {
+    var btn = $('btn-warenkorb');
+    exportiereSTL(function (buf) {
+      btn.disabled = true;
+      setStatus('Wird an den Warenkorb übergeben …');
+      IO.inDenWarenkorb(buf, 'teil3-konstruktion.stl', function (meldung) {
+        btn.disabled = false;
+        setStatus('Übergabe an den Warenkorb fehlgeschlagen (' + meldung + '). Du kannst die Datei stattdessen herunterladen.', true);
+      });
+    });
+  });
+
+  $('btn-neu').addEventListener('click', function () {
+    if (zustand.dok.objekte.length > 0 && !window.confirm('Aktuelles Projekt verwerfen und neu beginnen?')) return;
+    zustand.dok = D.neuesDokument();
+    zustand.historie = H.neueHistorie(zustand.dok);
+    zustand.meshCache = {};
+    IO.loescheAutosave();
+    window.T3KAssets.loescheAlle();
+    window.T3KAssets.loescheDb().catch(function () { });
+    zustand.worker.postMessage({ befehl: 'assetsLoeschen' });
+    setzeAuswahl([]);
+    zustand.viewport.versteckeSchnittebene();
+    zustand.viewport.leereTransparenz();
+    zeichneAlles();
+    aktualisiereWerkzeugleiste();
+    setStatus('Neues Projekt. Wähle links einen Grundkörper.');
+  });
+
+  // --- Vollbild-Toggle -----------------------------------------------------
+
+  (function () {
+    var btn = $('btn-vollbild');
+    var seite = document.querySelector('.k3d-seite');
+    if (!btn) return;
+    if (!seite || !seite.requestFullscreen) {
+      // Alte Browser ohne Fullscreen API: Knopf verstecken
+      btn.style.display = 'none';
+      return;
+    }
+    btn.addEventListener('click', function () {
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      } else {
+        seite.requestFullscreen().catch(function (err) {
+          setStatus('Vollbild nicht möglich (' + err.message + ').', true);
+        });
+      }
+    });
+    // Beschriftung folgt dem echten Zustand (auch bei Esc), danach muss der
+    // Viewport die neue Groesse nachrechnen -- erst NACH dem Reflow, denn
+    // fullscreenchange feuert, solange der Container noch die alte Groesse hat.
+    document.addEventListener('fullscreenchange', function () {
+      var drin = !!document.fullscreenElement;
+      btn.textContent = drin ? 'Vollbild verlassen' : 'Vollbild';
+      btn.title = drin ? 'Vollbild verlassen (Esc)' : 'Editor im Vollbild anzeigen';
+      window.requestAnimationFrame(function () {
+        if (zustand.viewport) zustand.viewport.passeGroesseAn();
+      });
+    });
+  })();
+})();
