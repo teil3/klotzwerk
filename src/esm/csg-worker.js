@@ -3,7 +3,7 @@
  * Buffers werden transferiert, nicht kopiert. Die Asset-Registry haelt
  * importierte STL-Geometrie fuer 'mesh'-Anfragen (Gruppen/Export).
  */
-import ManifoldModule from '../../manifold-3d/manifold.js';
+import ManifoldModule from '../../vendor/manifold-3d/manifold.js';
 import { knotenZuManifold, manifoldZuMesh, pruefeAsset, schneideKnoten, offsetKoerper, trenneKnoten, bohreKanal, oeffneFlaeche, streckeKnoten, streckenVorschau } from './csg-kern.js?v=2026-08-10n';
 
 let M = null;

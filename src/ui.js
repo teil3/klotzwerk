@@ -5,6 +5,11 @@
 (function () {
   'use strict';
 
+  // Basis-Pfad aus dem eigenen Script-Tag ableiten (document.currentScript ist
+  // beim klassischen Laden gesetzt) -- macht die App aus jedem Basis-Pfad
+  // lauffaehig (Demo-Root, teil3-Einbettung, fremde Websites).
+  var SCRIPT_BASIS = new URL('.', document.currentScript.src); // .../src/
+
   var D = window.KlotzwerkDokument, H = window.KlotzwerkHistorie, IO = window.KlotzwerkIO;
 
   var KANAL_DURCHMESSER = 3;   // Standard-Lochdurchmesser des Entleerungskanals in mm
@@ -47,10 +52,10 @@
   // --- Worker-Client -----------------------------------------------------
 
   function starteWorker() {
-    // Worker- und WASM-URL absolut bauen: Worker loesen relative URLs gegen
-    // ihren eigenen Ort auf (bekannte Falle).
-    var workerUrl = new URL('app/externals/3d-konstruktor/esm/csg-worker.js?v=2026-08-10n', location.href);
-    var wasmUrl = new URL('app/externals/manifold-3d/manifold.wasm', location.href).href;
+    // Worker- und WASM-URL script-relativ bauen: Worker loesen relative URLs
+    // gegen ihren eigenen Ort auf (bekannte Falle).
+    var workerUrl = new URL('esm/csg-worker.js', SCRIPT_BASIS);
+    var wasmUrl = new URL('../vendor/manifold-3d/manifold.wasm', SCRIPT_BASIS).href;
     var w = new Worker(workerUrl, { type: 'module' });
     zustand.worker = w;
     w.onmessage = function (e) {
