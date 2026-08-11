@@ -93,3 +93,46 @@
 .k3d-seite:fullscreen .k3d-palette,
 .k3d-seite:fullscreen .k3d-panel { overflow-y: auto; min-height: 0; }
 .k3d-seite:fullscreen #k3d-panel-inhalt { max-height: none; }
+
+/* Buttons: teil3.ch liefert diese Klassen normalerweise ueber Bootstrap
+   (teil3.css) mit, das die Demo bewusst nicht einbindet. ui.js erzeugt
+   Buttons in Dialogen/Verlauf mit .btn/.btn-primary/.btn-default -- darum
+   hier eigenstaendig im k3d-Look definiert statt Bootstrap-Blau. */
+.btn { display: inline-block; padding: 6px 12px; font-size: 14px; line-height: 1.42857143; text-align: center; white-space: nowrap; vertical-align: middle; cursor: pointer; border: 1px solid transparent; border-radius: 4px; }
+.btn:disabled { opacity: 0.65; cursor: not-allowed; }
+.btn-default { color: #333; background: #fff; border-color: #ccc; }
+.btn-default:hover:not(:disabled) { background: #e6e6e6; border-color: #adadad; }
+.btn-primary { color: #fff; background: #E32C14; border-color: #E32C14; }
+.btn-primary:hover:not(:disabled) { background: #c92511; border-color: #c92511; }
+
+/* uebernommen aus teil3 generator.css */
+.gen-page { padding-top: 1rem; }
+.gen-page h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  line-height: 1.15;
+  margin-top: 0.5rem;
+  margin-bottom: 0.25rem;
+  color: #393939;
+}
+.gen-page .lead-intro {
+  font-size: 1.2rem;
+  font-weight: 300;
+  color: #4d4d4d;
+  margin-bottom: 0;
+  max-width: 720px;
+}
+.terain-header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2.5rem;
+  align-items: center;
+  margin-bottom: 2.5rem;
+}
+.terain-header-text { min-width: 0; }
+@media (max-width: 768px) {
+  .terain-header {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+  }
+}

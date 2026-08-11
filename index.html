@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Klotzwerk — Browser-3D-CAD</title>
+    <link rel="stylesheet" href="klotzwerk.css" />
+    <script src="vendor/three.js-r124/three.min.js"></script>
+    <script src="vendor/three.js-r124/controls/OrbitControls.js"></script>
+    <script src="vendor/three.js-r124/controls/TransformControls.js"></script>
+    <script src="src/dokument.js"></script>
+    <script src="src/flaechen.js"></script>
+    <script src="src/historie.js"></script>
+    <script src="src/assets.js"></script>
+    <script src="src/io.js"></script>
+    <script src="src/navwuerfel.js"></script>
+    <script src="src/viewport.js"></script>
+    <script src="src/ui.js"></script>
+  </head>
+  <body>
+    <div class="gen-page k3d-seite">
+      <div class="terain-header">
+        <div class="terain-header-text">
+          <h1>Klotzwerk <span class="k3d-beta">Beta</span> <span class="k3d-untertitel">3D-Modelle online erstellen</span></h1>
+          <p class="lead-intro">
+            Konstruiere eigene 3D-Modelle direkt im Browser: Grundkörper
+            platzieren, verschieben und kombinieren, Löcher bohren — und das
+            Ergebnis als STL herunterladen.
+          </p>
+          <p>
+            Alles läuft auf deinem Rechner — es wird nichts hochgeladen. Dein
+            Projekt bleibt im Browser gespeichert, bis du es löschst.
+          </p>
+        </div>
+      </div>
+
+      <div class="k3d-statuszeile">
+        <div id="k3d-status" class="k3d-status">Engine wird geladen …</div>
+        <div id="k3d-busy" class="k3d-busy" hidden="hidden"><span class="k3d-busy-kreis"></span>rechnet …</div>
+      </div>
+
+      <div class="k3d-layout">
+        <div class="k3d-palette" id="k3d-palette">
+          <span class="k3d-palette-titel">Grundkörper</span>
+          <button type="button" data-typ="quader" disabled="disabled">Quader</button>
+          <button type="button" data-typ="zylinder" disabled="disabled">Zylinder</button>
+          <button type="button" data-typ="kugel" disabled="disabled">Kugel</button>
+          <button type="button" data-typ="kegel" disabled="disabled">Kegel</button>
+          <button type="button" data-typ="pyramide" disabled="disabled">Pyramide</button>
+          <button type="button" data-typ="torus" disabled="disabled">Torus</button>
+          <button type="button" data-typ="rohr" disabled="disabled">Rohr</button>
+          <span class="k3d-palette-titel">Eigene Datei</span>
+          <button type="button" id="btn-import" disabled="disabled">STL/3MF/OBJ importieren</button>
+          <input type="file" id="datei-import" accept=".stl,.3mf,.obj,.mtl" multiple="multiple" style="display:none" />
+        </div>
+
+        <div class="k3d-mitte">
+          <div class="k3d-werkzeuge">
+            <span class="k3d-trenner"></span>
+            <button type="button" id="btn-loch" title="Ausgewähltes Objekt als Negativ markieren — wird beim Verrechnen von den anderen Körpern abgezogen">Negativ</button>
+            <button type="button" id="btn-gruppieren" title="Auswahl zu einer Gruppe verrechnen">Gruppieren</button>
+            <button type="button" id="btn-aufloesen" title="Gruppe wieder in ihre Einzelteile zerlegen — Farben und Formen der Teile bleiben erhalten">Ungruppieren</button>
+            <button type="button" id="btn-schneiden" title="Ausgewähltes Objekt mit einer Ebene zerschneiden">Schneiden</button>
+            <button type="button" id="btn-strecken" title="Objekt an einer Ebene auseinanderziehen — die Lücke wird mit dem Querschnitt gefüllt">Strecken</button>
+            <button type="button" id="btn-aushoehlen" title="Ausgewähltes Objekt innen aushöhlen, die Wandstärke bleibt stehen">Aushöhlen</button>
+            <button type="button" id="btn-aufdicken" title="Ausgewähltes Objekt aussen aufdicken, macht zu dünne Wände druckbar">Aufdicken</button>
+            <button type="button" id="btn-anlegen" title="Fläche wählen und an eine Fläche eines anderen Objekts oder auf die Arbeitsfläche anlegen">Anlegen</button>
+            <button type="button" id="btn-auftrennen" title="Objekt aus mehreren losen Teilen in einzelne Objekte auftrennen">Auftrennen</button>
+            <button type="button" id="btn-duplizieren" title="Ausgewähltes Objekt duplizieren">Duplizieren</button>
+            <button type="button" id="btn-loeschen" title="Ausgewähltes Objekt löschen">Löschen</button>
+            <span class="k3d-trenner"></span>
+            <button type="button" id="btn-undo" title="Rückgängig (Ctrl+Z)">↶</button>
+            <button type="button" id="btn-redo" title="Wiederholen (Ctrl+Y)">↷</button>
+            <span class="k3d-trenner"></span>
+            <button type="button" id="btn-neu" title="Neues Projekt beginnen">Neu</button>
+            <span class="k3d-trenner"></span>
+            <button type="button" id="btn-vollbild" title="Editor im Vollbild anzeigen">Vollbild</button>
+          </div>
+          <div id="k3d-viewport" class="k3d-viewport"></div>
+          <div class="k3d-export">
+            <button type="button" id="btn-download" class="btn btn-default">Exportieren …</button>
+            <button type="button" id="btn-projekt-speichern" class="btn btn-default">Projekt sichern</button>
+            <button type="button" id="btn-projekt-oeffnen" class="btn btn-default">Projekt öffnen</button>
+            <input type="file" id="datei-projekt" accept=".json" style="display:none" />
+          </div>
+        </div>
+
+        <div class="k3d-panel" id="k3d-panel">
+          <span class="k3d-palette-titel">Objekte</span>
+          <div id="k3d-panel-inhalt"><p class="k3d-panel-leer">Noch keine Objekte — wähle links einen Grundkörper.</p></div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
