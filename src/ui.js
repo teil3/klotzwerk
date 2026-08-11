@@ -1836,7 +1836,7 @@
     aktualisiereWerkzeugleiste();
   }
 
-  // --- Export, Warenkorb, Neues Projekt -----------------------------------
+  // --- Export, Neues Projekt -----------------------------------------------
 
   function exportiereVerrechnet(objekte, danach) {
     if (objekte.length === 0) {
@@ -1886,6 +1886,9 @@
   function exportiereSTL(danach) {
     exportiereVerrechnet(zustand.dok.objekte, danach);
   }
+
+  // Oeffentliche API fuer Einbettungen (z.B. teil3.ch).
+  window.Klotzwerk = { exportiereSTL: exportiereSTL };
 
   // Farbiger Export (OBJ/3MF): ein Mesh PRO Objekt, damit die Farben
   // erhalten bleiben. Top-Level-Negative im Export-Umfang werden von jedem
@@ -2041,16 +2044,20 @@
 
   $('btn-download').addEventListener('click', zeigeExportDialog);
 
-  $('btn-warenkorb').addEventListener('click', function () {
-    var btn = $('btn-warenkorb');
-    exportiereSTL(function (buf) {
-      btn.disabled = true;
-      setStatus('Wird an den Warenkorb übergeben …');
-      IO.inDenWarenkorb(buf, 'teil3-konstruktion.stl', function (meldung) {
-        btn.disabled = false;
-        setStatus('Übergabe an den Warenkorb fehlgeschlagen (' + meldung + '). Du kannst die Datei stattdessen herunterladen.', true);
+  // Zusatz-Aktionen der Einbettung: erscheinen als Buttons neben "Download".
+  (window.KLOTZWERK_AKTIONEN || []).forEach(function (aktion) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn btn-primary'; b.textContent = aktion.label;
+    b.addEventListener('click', function () {
+      exportiereSTL(function (buf) {
+        b.disabled = true;
+        aktion.ausfuehren(buf, function (fehler) {
+          b.disabled = false;
+          if (fehler) setStatus(fehler, true);
+        });
       });
     });
+    $('btn-download').parentNode.insertBefore(b, $('btn-download').nextSibling);
   });
 
   $('btn-neu').addEventListener('click', function () {

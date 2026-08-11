@@ -1,12 +1,11 @@
 /*
- * Ein-/Ausgabe des 3D-Konstruktors: binaerer STL-Writer, Datei-Download,
- * Warenkorb-Uebergabe (Muster stl-reduzieren.js) und Autosave in localStorage.
+ * Ein-/Ausgabe des 3D-Konstruktors: binaerer STL-Writer, Datei-Download
+ * und Autosave in localStorage.
  * Browser: window.KlotzwerkIO, Node (nur STL-Writer): require().
  */
 (function () {
   'use strict';
 
-  var UPLOAD_URL = '3d-dateien-hochladen-und-3d-drucken-lassen.html';
   var AUTOSAVE_SCHLUESSEL = 'klotzwerk.autosave';
   var AUTOSAVE_SCHLUESSEL_ALT = 't3.3dkonstruktor.autosave'; // teil3.ch-Altbestand
 
@@ -669,24 +668,6 @@
     downloadBlob(new Blob([text], { type: 'application/json' }), dateiname);
   }
 
-  function inDenWarenkorb(arrayBuffer, dateiname, beiFehler) {
-    var blob = new Blob([arrayBuffer], { type: 'model/stl' });
-    var fd = new FormData();
-    fd.append('files[]', blob, dateiname);
-    fetch(UPLOAD_URL, { method: 'POST', body: fd, credentials: 'same-origin' })
-      .then(function (res) {
-        return res.text().then(function (text) {
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          var json;
-          try { json = JSON.parse(text); }
-          catch (e) { throw new Error('Ungueltige Antwort vom Server'); }
-          if (!json.success) throw new Error('Upload abgelehnt');
-          window.location.href = 'usecases/view-part-stage.html';
-        });
-      })
-      .catch(function (err) { beiFehler(err.message); });
-  }
-
   function speichereAutosave(dokumentString) {
     try { window.localStorage.setItem(AUTOSAVE_SCHLUESSEL, dokumentString); return true; }
     catch (e) { return false; }
@@ -837,7 +818,6 @@
     parseSTL: parseSTL,
     downloadDatei: downloadDatei,
     downloadText: downloadText,
-    inDenWarenkorb: inDenWarenkorb,
     speichereAutosave: speichereAutosave,
     ladeAutosave: ladeAutosave,
     loescheAutosave: loescheAutosave,
