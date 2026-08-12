@@ -542,6 +542,7 @@
       passeGroesseAn: passeGroesseAn, holeBasisGroesse: holeBasisGroesse,
       zeigeSchnittebene: zeigeSchnittebene, versteckeSchnittebene: versteckeSchnittebene,
       holeSchnittebene: holeSchnittebene, setzeSchnittebeneTransform: setzeSchnittebeneTransform,
+      setzeSchnittRaster: setzeSchnittRaster,
       starteStreckVorschau: starteStreckVorschau, setzeStreckBreite: setzeStreckBreite,
       beendeStreckVorschau: beendeStreckVorschau,
       starteAnlegeModus: starteAnlegeModus, beendeAnlegeModus: beendeAnlegeModus,
@@ -710,7 +711,7 @@
       ray.setFromCamera(zeigt, kamera);
       // Klicks auf die Schnittebene schlucken, damit sie waehrend des
       // Positionierens nicht die Auswahl dahinter aendert.
-      if (schnittEbene && ray.intersectObject(schnittEbene, false).length) return;
+      if (schnittEbene && ray.intersectObject(schnittEbene, true).length) return;
       var liste = Object.keys(vp.meshes).map(function (id) { return vp.meshes[id]; })
         .filter(function (m) { return m.visible; });
       var treffer = ray.intersectObjects(liste, false);
@@ -1029,6 +1030,7 @@
 
     // Schnittebene (Cut-Tool): sichtbare Ebene, am Gizmo positionierbar
     var schnittEbene = null;
+    var rasterPlatten = [];   // passive Zusatz-Platten des Raster-Schnitts (Kinder der Anker-Platte)
 
     // Anlege-Modus: { phase: 1|2, zielId, flaecheA, analysen: {id -> Ergebnis|null},
     //   gemeldet: {id -> true}, hoverMeshId, hoverFlaeche, platteHover,
@@ -1435,6 +1437,63 @@
       }
     }
 
+    // Grau-Vorschau an/aus, ohne den Schnitt-Modus zu beenden. Bei mehr als
+    // einer Ebene (Raster) gibt es kein sinnvolles "dahinter" -- dann aus.
+    function setzeGrauVorschau(aktiv) {
+      if (!schnittZiel) return;
+      if (aktiv && !schnittGrau) {
+        schnittZiel.material.clippingPlanes = [clipVorne];
+        schnittGrau = new THREE.Mesh(schnittZiel.geometry, new THREE.MeshPhongMaterial({
+          color: 0x8f8f8f, flatShading: true, clippingPlanes: [clipHinten]
+        }));
+        schnittGrau.position.copy(schnittZiel.position);
+        schnittGrau.quaternion.copy(schnittZiel.quaternion);
+        schnittGrau.scale.copy(schnittZiel.scale);
+        schnittGrau.visible = schnittZiel.visible;
+        szene.add(schnittGrau);
+        aktualisiereSchnittClipping();
+      } else if (!aktiv && schnittGrau) {
+        if (schnittZiel.material) schnittZiel.material.clippingPlanes = null;
+        szene.remove(schnittGrau);
+        schnittGrau.material.dispose();
+        schnittGrau = null;
+      }
+    }
+
+    // Zusatz-Platten des Raster-Schnitts. Geometrie und Material werden mit
+    // der Anker-Platte GETEILT (kein dispose hier -- versteckeSchnittebene
+    // raeumt die geteilten Ressourcen genau einmal ab). Als Kinder der
+    // Anker-Platte folgen sie Gizmo-Drags und -Drehungen automatisch.
+    function entferneRasterPlatten() {
+      rasterPlatten.forEach(function (p) { schnittEbene.remove(p); });
+      rasterPlatten = [];
+    }
+
+    // konfig {nZ,dZ,nX,dX,nY,dY}: Anzahl/Abstand mm je Achse des
+    // Ebenen-Koordinatensystems (Z = Normale). Anker = erste Z-Ebene.
+    // Einzel-Fall 1/0/0: keine Zusatz-Platten, Grau-Vorschau an.
+    function setzeSchnittRaster(konfig) {
+      if (!schnittEbene) return;
+      entferneRasterPlatten();
+      var einzeln = konfig.nZ === 1 && konfig.nX === 0 && konfig.nY === 0;
+      setzeGrauVorschau(einzeln);
+      if (einzeln) return;
+      var kontur = schnittEbene.children[0];   // LineSegments der Anker-Platte
+      function platte(px, py, pz, rx, ry) {
+        var p = new THREE.Mesh(schnittEbene.geometry, schnittEbene.material);
+        p.userData.id = '__schnittebene';
+        p.add(new THREE.LineSegments(kontur.geometry, kontur.material));
+        p.position.set(px, py, pz);
+        p.rotation.set(rx, ry, 0);
+        schnittEbene.add(p);
+        rasterPlatten.push(p);
+      }
+      var k;
+      for (k = 1; k < konfig.nZ; k++) platte(0, 0, k * konfig.dZ, 0, 0);
+      for (k = 0; k < konfig.nX; k++) platte(k * konfig.dX, 0, 0, 0, Math.PI / 2);
+      for (k = 0; k < konfig.nY; k++) platte(0, k * konfig.dY, 0, -Math.PI / 2, 0);
+    }
+
     function zeigeSchnittebene(zielId, pose) {
       var ziel = vp.meshes[zielId];
       if (!ziel) return false;
@@ -1467,21 +1526,14 @@
       gizmoAttach(schnittEbene, false);
       renderer.localClippingEnabled = true;
       schnittZiel = ziel;
-      ziel.material.clippingPlanes = [clipVorne];
-      schnittGrau = new THREE.Mesh(ziel.geometry, new THREE.MeshPhongMaterial({
-        color: 0x8f8f8f, flatShading: true, clippingPlanes: [clipHinten]
-      }));
-      schnittGrau.position.copy(ziel.position);
-      schnittGrau.quaternion.copy(ziel.quaternion);
-      schnittGrau.scale.copy(ziel.scale);
-      schnittGrau.visible = ziel.visible;
-      szene.add(schnittGrau);
+      setzeGrauVorschau(true);
       aktualisiereSchnittClipping();
       return true;
     }
 
     function versteckeSchnittebene() {
       entferneSchnittVorschau();
+      if (schnittEbene) entferneRasterPlatten();
       if (!schnittEbene) return;
       gizmoDetach(schnittEbene);
       szene.remove(schnittEbene);
