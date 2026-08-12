@@ -149,7 +149,7 @@ function etwa(a, b, tolProzent) {
       id: 'k1', typ: 'quader', params: { breite: 20, tiefe: 20, hoehe: 20 },
       transform: { position: [5, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] }, istLoch: false
     };
-    const teile = kern.schneideKnoten(M, knoten, [0, 0, 1], 8);
+    const teile = kern.schneideKnotenMehrfach(M, knoten, [{ normal: [0, 0, 1], offset: 8 }]);
     check('Quader horizontal: 2 Teile', teile.length === 2, 'sind ' + teile.length);
     const vols = teile.map(meshVolumen);
     check('Volumensumme = Original', etwa(vols[0] + vols[1], 8000, 0.01), 'summe=' + (vols[0] + vols[1]));
@@ -169,7 +169,7 @@ function etwa(a, b, tolProzent) {
           transform: { position: [0, 0, 5], rotation: [0, 0, 0], skalierung: [1, 1, 1] }, istLoch: true }
       ]
     };
-    const teile = kern.schneideKnoten(M, u, [0, 0, 1], 20);
+    const teile = kern.schneideKnotenMehrfach(M, u, [{ normal: [0, 0, 1], offset: 20 }]);
     check('U-Form: 3 Teile', teile.length === 3, 'sind ' + teile.length);
   }
   {
@@ -178,7 +178,7 @@ function etwa(a, b, tolProzent) {
       id: 'k1', typ: 'kugel', params: { durchmesser: 20 },
       transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] }, istLoch: false
     };
-    const teile = kern.schneideKnoten(M, knoten, [0, 0, 1], 100);
+    const teile = kern.schneideKnotenMehrfach(M, knoten, [{ normal: [0, 0, 1], offset: 100 }]);
     check('Ebene verfehlt: 1 Teil', teile.length === 1, 'sind ' + teile.length);
   }
   {
@@ -188,10 +188,58 @@ function etwa(a, b, tolProzent) {
       transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] }, istLoch: false
     };
     const w = Math.SQRT1_2;
-    const teile = kern.schneideKnoten(M, knoten, [w, 0, w], w * 10);
+    const teile = kern.schneideKnotenMehrfach(M, knoten, [{ normal: [w, 0, w], offset: w * 10 }]);
     check('Schraege Ebene: 2 Teile', teile.length === 2, 'sind ' + teile.length);
     const vols = teile.map(meshVolumen);
     check('Volumensumme schraeg', etwa(vols[0] + vols[1], 8000, 0.01), 'summe=' + (vols[0] + vols[1]));
+  }
+
+  console.log('Mehrfach-Schnitt (schneideKnotenMehrfach):');
+  {
+    // Quader 20x20x20 (x,y in [-10,10], z in [0,20]), 2 Ebenen z=5 und z=15 -> 3 Teile
+    const knoten = {
+      id: 'k1', typ: 'quader', params: { breite: 20, tiefe: 20, hoehe: 20 },
+      transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] }, istLoch: false
+    };
+    const teile = kern.schneideKnotenMehrfach(M, knoten,
+      [{ normal: [0, 0, 1], offset: 5 }, { normal: [0, 0, 1], offset: 15 }]);
+    check('2 Z-Ebenen: 3 Teile', teile.length === 3, 'sind ' + teile.length);
+    const vols = teile.map(meshVolumen);
+    const summe = vols.reduce(function (a, b) { return a + b; }, 0);
+    check('2 Z-Ebenen: Volumensumme = Original', etwa(summe, 8000, 0.01), 'summe=' + summe);
+  }
+  {
+    // Kreuz-Raster: 1 Ebene z=10 + 1 Quer-Ebene x=0 -> 4 Teile
+    const knoten = {
+      id: 'k1', typ: 'quader', params: { breite: 20, tiefe: 20, hoehe: 20 },
+      transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] }, istLoch: false
+    };
+    const teile = kern.schneideKnotenMehrfach(M, knoten,
+      [{ normal: [0, 0, 1], offset: 10 }, { normal: [1, 0, 0], offset: 0 }]);
+    check('Kreuz-Raster: 4 Teile', teile.length === 4, 'sind ' + teile.length);
+    const vols = teile.map(meshVolumen);
+    check('Kreuz-Raster: jedes Teil 2000', vols.every(function (v) { return etwa(v, 2000, 0.01); }),
+      'sind ' + vols.map(function (v) { return v.toFixed(0); }).join('/'));
+  }
+  {
+    // Eine Ebene verfehlt (z=100), eine trifft (z=10): verfehlen ist No-op -> 2 Teile
+    const knoten = {
+      id: 'k1', typ: 'quader', params: { breite: 20, tiefe: 20, hoehe: 20 },
+      transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] }, istLoch: false
+    };
+    const teile = kern.schneideKnotenMehrfach(M, knoten,
+      [{ normal: [0, 0, 1], offset: 100 }, { normal: [0, 0, 1], offset: 10 }]);
+    check('verfehlt+trifft: 2 Teile', teile.length === 2, 'sind ' + teile.length);
+  }
+  {
+    // Alle Ebenen verfehlen: 1 Teil (UI meldet "keine Ebene trifft")
+    const knoten = {
+      id: 'k1', typ: 'quader', params: { breite: 20, tiefe: 20, hoehe: 20 },
+      transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] }, istLoch: false
+    };
+    const teile = kern.schneideKnotenMehrfach(M, knoten,
+      [{ normal: [0, 0, 1], offset: 100 }, { normal: [1, 0, 0], offset: 100 }]);
+    check('alle verfehlen: 1 Teil', teile.length === 1, 'sind ' + teile.length);
   }
 
   console.log('Auftrennen (trenneMesh, Suppe):');

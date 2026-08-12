@@ -204,24 +204,36 @@ export function knotenZuManifold(M, knoten, ohneEigenesTransform, assets) {
 }
 
 // Schneidet einen Knoten (mit seinem Transform, also in Weltkoordinaten)
-// an der Ebene n*x = offset. Liefert pro zusammenhaengendem Stueck ein
-// Mesh, zuerst die Stuecke auf der Normalen-Seite. Weniger als 2 Teile
-// heisst: die Ebene verfehlt das Objekt.
-export function schneideKnoten(M, knoten, normal, offset, assets) {
+// an einer Liste von Ebenen [{normal, offset}] (Ebene: n*x = offset).
+// Iterativ: jede Ebene zerteilt alle bisherigen Stuecke weiter; eine
+// Ebene, die ein Stueck verfehlt, ist fuer dieses Stueck ein No-op.
+// Am Schluss wird jedes Stueck via decompose in zusammenhaengende Teile
+// zerlegt. Weniger als 2 Teile heisst: keine Ebene trifft das Objekt.
+export function schneideKnotenMehrfach(M, knoten, ebenen, assets) {
   const basis = knotenZuManifold(M, knoten, false, assets);
   if (!basis) return [];
-  const seiten = basis.splitByPlane(normal, offset);
-  basis.delete();
+  let stuecke = [basis];
+  for (const ebene of ebenen) {
+    const naechste = [];
+    for (const stueck of stuecke) {
+      const seiten = stueck.splitByPlane(ebene.normal, ebene.offset);
+      stueck.delete();
+      for (const seite of seiten) {
+        if (!seite) continue;
+        if (istLeer(seite)) { seite.delete(); continue; }
+        naechste.push(seite);
+      }
+    }
+    stuecke = naechste;
+  }
   const teile = [];
-  for (const seite of seiten) {
-    if (!seite) continue;
-    if (istLeer(seite)) { seite.delete(); continue; }
-    for (const stueck of seite.decompose()) {
+  for (const s of stuecke) {
+    for (const stueck of s.decompose()) {
       if (istLeer(stueck)) { stueck.delete(); continue; }
       teile.push(manifoldZuMesh(stueck));
       stueck.delete();
     }
-    seite.delete();
+    s.delete();
   }
   return teile;
 }

@@ -4,7 +4,7 @@
  * importierte STL-Geometrie fuer 'mesh'-Anfragen (Gruppen/Export).
  */
 import ManifoldModule from '../../vendor/manifold-3d/manifold.js';
-import { knotenZuManifold, manifoldZuMesh, pruefeAsset, schneideKnoten, offsetKoerper, trenneKnoten, bohreKanal, oeffneFlaeche, streckeKnoten, streckenVorschau } from './csg-kern.js';
+import { knotenZuManifold, manifoldZuMesh, pruefeAsset, schneideKnotenMehrfach, offsetKoerper, trenneKnoten, bohreKanal, oeffneFlaeche, streckeKnoten, streckenVorschau } from './csg-kern.js';
 
 let M = null;
 const assets = {};   // assetId -> {vertProperties, triVerts, wasserdicht, name}
@@ -53,7 +53,7 @@ self.onmessage = async (e) => {
     }
     if (d.befehl === 'schneiden') {
       if (!M) throw new Error('Engine nicht initialisiert');
-      const teile = schneideKnoten(M, d.knoten, d.normal, d.offset, assets);
+      const teile = schneideKnotenMehrfach(M, d.knoten, d.ebenen, assets);
       const transfer = [];
       teile.forEach((t) => { transfer.push(t.vertProperties.buffer, t.triVerts.buffer); });
       self.postMessage({ befehl: 'schnittErgebnis', anfrageId: d.anfrageId, teile: teile }, transfer);
