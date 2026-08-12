@@ -19,6 +19,10 @@ Computation runs in a module worker on top of [manifold-3d](https://github.com/e
 
 https://teil3.github.io/klotzwerk/
 
+Klotzwerk in production, integrated with a print-ordering workflow (the
+`KLOTZWERK_AKTIONEN` hook described below):
+[teil3.ch — 3D-Modelle online erstellen](https://www.teil3.ch/3d-modelle-online-erstellen.html)
+
 ## Quickstart
 
 ```bash
