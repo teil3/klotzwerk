@@ -486,6 +486,27 @@
       });
     });
 
+    $('btn-ueberschneiden').addEventListener('click', function () {
+      var ids = zustand.auswahl.slice();
+      // Probe: waere der Schnitt leer? Dann gar nicht erst verrechnen.
+      var probe = {
+        id: 'probe', typ: 'gruppe', modus: 'ueberschneiden', istLoch: false,
+        transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] },
+        kinder: ids.map(function (id) { return D.findeKnoten(zustand.dok, id); })
+      };
+      frageMesh(probe).then(function (daten) {
+        if (!daten) {
+          setStatus('Keine Überschneidung — die Objekte berühren sich nicht. Nicht verrechnet.', true);
+          return;
+        }
+        var gId = D.gruppiere(zustand.dok, ids, 'ueberschneiden');
+        setzeAuswahl([gId]);
+        nachAenderung();
+      }).catch(function (err) {
+        setStatus('Überschneiden fehlgeschlagen (' + err.message + '). Dein Modell ist unverändert.', true);
+      });
+    });
+
     $('btn-aufloesen').addEventListener('click', function () {
       var kindIds = D.loeseAuf(zustand.dok, zustand.auswahl[0]);
       if (kindIds.length) {
@@ -1810,6 +1831,7 @@
       (nichtWasserdicht && !(einzel && einzel.typ === 'import'));
     $('btn-loch').disabled = modusAktiv || n === 0 || nichtWasserdicht;
     $('btn-gruppieren').disabled = modusAktiv || n < 2 || nichtWasserdicht;
+    $('btn-ueberschneiden').disabled = modusAktiv || n < 2 || nichtWasserdicht;
     $('btn-aufloesen').disabled = modusAktiv || !(einzel && einzel.typ === 'gruppe');
     $('btn-duplizieren').disabled = modusAktiv || n !== 1;
     $('btn-loeschen').disabled = modusAktiv || n === 0;

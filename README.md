@@ -6,7 +6,7 @@ Browser-based 3D CAD tool for combining solid primitives into printable models â
 
 - Primitives: box, cylinder, sphere, cone, pyramid, torus, pipe
 - Move, rotate, and scale with a gizmo and snapping grid
-- Boolean operations: union, subtract, drill holes
+- Boolean operations: union, subtract, intersection, drill holes
 - Grouping/ungrouping, hollowing, face-to-face alignment ("Anlegen")
 - Undo/redo
 - Autosave to IndexedDB â€” nothing is uploaded, the project stays in the browser
