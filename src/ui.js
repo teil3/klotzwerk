@@ -26,6 +26,7 @@
     viewport: null,
     schnitt: null,
     letzteSchnittPose: null,   // {position, rotation} der Ebene des letzten Schnitts
+    letzterSchnittRaster: null,   // Raster-Konfig des letzten Schnitts (wie letzteSchnittPose)
     offset: null,              // {richtung, zielId, wandstaerke} im Aushoehlen/Aufdicken-Modus
     kanal: null,               // {zielId, wandstaerke, laeuft} in der Entleerungskanal-Phase
     strecken: null,            // {zielId, phase: 1|2, breite, normal, offset, laeuft} im Strecken-Modus
@@ -186,14 +187,14 @@
     });
   }
 
-  function frageSchnitt(knoten, normal, offset) {
+  function frageSchnitt(knoten, ebenen) {
     var id = zustand.naechsteAnfrage++;
     return new Promise(function (resolve, reject) {
       zustand.anfragen[id] = { resolve: resolve, reject: reject };
       aktualisiereBusy();
       zustand.worker.postMessage({
         befehl: 'schneiden', anfrageId: id,
-        knoten: JSON.parse(JSON.stringify(knoten)), normal: normal, offset: offset
+        knoten: JSON.parse(JSON.stringify(knoten)), ebenen: ebenen
       });
     });
   }
@@ -980,13 +981,21 @@
 
   // --- Schnitt-Modus (Cut-Tool) -------------------------------------------
 
+  // Default-Raster = heutiges Verhalten: genau die Anker-Ebene, keine Quer-Ebenen
+  var RASTER_DEFAULT = { nZ: 1, dZ: 20, nX: 0, dX: 20, nY: 0, dY: 20 };
+
+  function kopiereRaster(r) {
+    return { nZ: r.nZ, dZ: r.dZ, nX: r.nX, dX: r.dX, nY: r.nY, dY: r.dY };
+  }
+
   function starteSchnittModus() {
     var zielId = zustand.auswahl[0];
     if (!zustand.viewport.zeigeSchnittebene(zielId, zustand.letzteSchnittPose)) {
       setStatus('Das Objekt ist noch nicht fertig berechnet — einen Moment.', true);
       return;
     }
-    zustand.schnitt = { zielId: zielId };
+    zustand.schnitt = { zielId: zielId, raster: kopiereRaster(zustand.letzterSchnittRaster || RASTER_DEFAULT) };
+    zustand.viewport.setzeSchnittRaster(zustand.schnitt.raster);
     $('btn-schneiden').classList.add('k3d-aktiv');
     aktualisiereWerkzeugleiste();
     zeichnePanel();
@@ -999,6 +1008,7 @@
     if (!zustand.schnitt) return;
     var ebene = zustand.viewport.holeSchnittebene();
     if (ebene) zustand.letzteSchnittPose = { position: ebene.position, rotation: ebene.rotation };
+    zustand.letzterSchnittRaster = zustand.schnitt.raster;
     zustand.schnitt = null;
     zustand.viewport.versteckeSchnittebene();
     $('btn-schneiden').classList.remove('k3d-aktiv');
@@ -1018,11 +1028,15 @@
     var knoten = D.findeKnoten(zustand.dok, s.zielId);
     var ebene = zustand.viewport.holeSchnittebene();
     if (!knoten || !ebene) { brichSchnittAb(); return; }
+    var ebenen = window.KlotzwerkSchnitt.baueSchnittEbenen(
+      { position: ebene.position, rotation: ebene.rotation }, s.raster);
     setStatus('Wird geschnitten …');
-    frageSchnitt(knoten, ebene.normal, ebene.offset).then(function (teile) {
+    frageSchnitt(knoten, ebenen).then(function (teile) {
       if (zustand.schnitt !== s) return;   // Modus inzwischen beendet oder neu gestartet
       if (!teile || teile.length < 2) {
-        setStatus('Die Ebene trifft das Objekt nicht — nichts geschnitten.', true);
+        setStatus(ebenen.length === 1
+          ? 'Die Ebene trifft das Objekt nicht — nichts geschnitten.'
+          : 'Keine Ebene trifft das Objekt — nichts geschnitten.', true);
         return;
       }
       var erg = ersetzeDurchTeile(knoten, teile);
@@ -1425,6 +1439,33 @@
           zustand.viewport.setzeSchnittebeneTransform(akt.position, akt.rotation);
         });
       });
+      if (!istStrecken1) {
+        var raster = zustand.schnitt.raster;
+        var titelR = document.createElement('p');
+        titelR.textContent = 'Ebenen pro Achse (Anzahl / Abstand)';
+        inhalt.appendChild(titelR);
+        // Anzahl: ganzzahlig 0..10, insgesamt mindestens 1 Ebene.
+        // Abstand: > 0 mm. Ungueltiges laesst zeichnePanel auf den alten
+        // Wert zurueckspringen (beiAenderung wird nicht angewendet).
+        function setzeAnzahl(schluessel, v) {
+          var n = Math.round(v);
+          if (n < 0 || n > 10 || n !== v) return;
+          var summe = raster.nZ + raster.nX + raster.nY - raster[schluessel] + n;
+          if (summe < 1) return;
+          raster[schluessel] = n;
+          zustand.viewport.setzeSchnittRaster(raster);
+        }
+        function setzeAbstand(schluessel, v) {
+          if (!(v > 0)) return;
+          raster[schluessel] = v;
+          zustand.viewport.setzeSchnittRaster(raster);
+        }
+        [['Z (Normale)', 'nZ', 'dZ'], ['X (quer)', 'nX', 'dX'], ['Y (quer)', 'nY', 'dY']]
+          .forEach(function (zeile) {
+            ebenenFeld('Anzahl ' + zeile[0], raster[zeile[1]], function (v) { setzeAnzahl(zeile[1], v); });
+            ebenenFeld('Abstand ' + zeile[0] + ' (mm)', raster[zeile[2]], function (v) { setzeAbstand(zeile[2], v); });
+          });
+      }
       var bAus = document.createElement('button');
       bAus.type = 'button';
       bAus.className = 'btn btn-primary';
