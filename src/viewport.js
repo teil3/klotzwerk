@@ -985,7 +985,7 @@
       for (var i = 0; i < dok.objekte.length; i++) {
         var k = dok.objekte[i];
         if (k.id !== id) continue;
-        var aktuellerSchluessel = JSON.stringify(k.typ === 'gruppe' ? k.kinder : k.params);
+        var aktuellerSchluessel = k.id + '|' + (k.modus || '') + '|' + JSON.stringify(k.typ === 'gruppe' ? k.kinder : k.params);
         return aktuellerSchluessel === schluessel ? k : null;
       }
       return null;
