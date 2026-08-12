@@ -104,6 +104,36 @@ function etwa(a, b, tolProzent) {
     }, true) === null);
   }
 
+  console.log('Ueberschneiden:');
+  {
+    const T = () => ({ position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] });
+    const quader = (id, pos) => ({ id, typ: 'quader', params: { breite: 20, tiefe: 20, hoehe: 20 },
+      transform: { position: pos, rotation: [0, 0, 0], skalierung: [1, 1, 1] }, istLoch: false });
+    // A um [0,0,0], B um [10,0,0]: Schnitt = 10 x 20 x 20 = 4000
+    const g2 = { id: 'g', typ: 'gruppe', modus: 'ueberschneiden', istLoch: false, transform: T(),
+      kinder: [quader('a', [0, 0, 0]), quader('b', [10, 0, 0])] };
+    const m2 = kern.knotenZuManifold(M, g2);
+    check('Schnitt 2 Quader Volumen', etwa(kern.volumen(m2), 4000, 0.001), 'ist ' + kern.volumen(m2).toFixed(1));
+    m2.delete();
+    // dritter Quader um [0,10,0]: Schnitt = 10 x 10 x 20 = 2000
+    const g3 = { id: 'g3', typ: 'gruppe', modus: 'ueberschneiden', istLoch: false, transform: T(),
+      kinder: [quader('a', [0, 0, 0]), quader('b', [10, 0, 0]), quader('c', [0, 10, 0])] };
+    const m3 = kern.knotenZuManifold(M, g3);
+    check('Schnitt 3 Quader Volumen', etwa(kern.volumen(m3), 2000, 0.001), 'ist ' + kern.volumen(m3).toFixed(1));
+    m3.delete();
+    // disjunkt: B um [100,0,0] -> leer -> null
+    const g0 = { id: 'g0', typ: 'gruppe', modus: 'ueberschneiden', istLoch: false, transform: T(),
+      kinder: [quader('a', [0, 0, 0]), quader('b', [100, 0, 0])] };
+    check('leerer Schnitt liefert null', kern.knotenZuManifold(M, g0) === null);
+    // istLoch am direkten Kind wird ignoriert
+    const kindLoch = quader('b', [10, 0, 0]); kindLoch.istLoch = true;
+    const gl = { id: 'gl', typ: 'gruppe', modus: 'ueberschneiden', istLoch: false, transform: T(),
+      kinder: [quader('a', [0, 0, 0]), kindLoch] };
+    const ml = kern.knotenZuManifold(M, gl);
+    check('istLoch in Schnittgruppe ignoriert', ml !== null && etwa(kern.volumen(ml), 4000, 0.001));
+    if (ml) ml.delete();
+  }
+
   console.log('Schneiden (Cut-Tool):');
   function meshVolumen(daten) {
     const mesh = new M.Mesh({ numProp: 3, vertProperties: daten.vertProperties, triVerts: daten.triVerts });

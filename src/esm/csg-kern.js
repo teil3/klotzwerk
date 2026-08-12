@@ -134,33 +134,63 @@ function vereinige(M, liste) {
   return acc;
 }
 
+function schneide(M, liste) {
+  if (liste.length === 0) return null;
+  let acc = liste[0];
+  for (let i = 1; i < liste.length; i++) {
+    const next = M.Manifold.intersection(acc, liste[i]);
+    acc.delete(); liste[i].delete();
+    acc = next;
+  }
+  return acc;
+}
+
 export function knotenZuManifold(M, knoten, ohneEigenesTransform, assets) {
   let basis;
   if (knoten.typ === 'gruppe') {
-    const solide = [], loecher = [];
-    try {
-      for (const kind of knoten.kinder) {
-        const m = knotenZuManifold(M, kind, false, assets);
-        if (!m) continue;                    // leere Unter-Gruppe
-        (kind.istLoch ? loecher : solide).push(m);
+    if (knoten.modus === 'ueberschneiden') {
+      const teile = [];
+      try {
+        for (const kind of knoten.kinder) {
+          const m = knotenZuManifold(M, kind, false, assets);
+          // leeres Kind: Schnitt mit nichts ist nichts
+          if (!m) { teile.forEach((t) => t.delete()); return null; }
+          teile.push(m);                       // istLoch bewusst ignoriert
+        }
+      } catch (e) {
+        teile.forEach((t) => t.delete());
+        throw e;
       }
-    } catch (e) {
-      // Kind-Aufbau abgebrochen (Import "nicht gefunden"/"nicht wasserdicht"):
-      // bereits gebaute Manifolds dieser Gruppe sonst geleakt.
-      solide.forEach((m) => m.delete());
-      loecher.forEach((m) => m.delete());
-      throw e;
+      let s = schneide(M, teile);
+      if (!s) return null;
+      if (istLeer(s)) { s.delete(); return null; }
+      basis = s;
+    } else {
+      const solide = [], loecher = [];
+      try {
+        for (const kind of knoten.kinder) {
+          const m = knotenZuManifold(M, kind, false, assets);
+          if (!m) continue;                    // leere Unter-Gruppe
+          (kind.istLoch ? loecher : solide).push(m);
+        }
+      } catch (e) {
+        // Kind-Aufbau abgebrochen (Import "nicht gefunden"/"nicht wasserdicht"):
+        // bereits gebaute Manifolds dieser Gruppe sonst geleakt.
+        solide.forEach((m) => m.delete());
+        loecher.forEach((m) => m.delete());
+        throw e;
+      }
+      let s = vereinige(M, solide);
+      const l = vereinige(M, loecher);
+      if (!s) { if (l) l.delete(); return null; }
+      if (l) {
+        const d = M.Manifold.difference(s, l);
+        s.delete(); l.delete();
+        s = d;
+      }
+      if (istLeer(s)) { s.delete(); return null; }
+      basis = s;
     }
-    let s = vereinige(M, solide);
-    const l = vereinige(M, loecher);
-    if (!s) { if (l) l.delete(); return null; }
-    if (l) {
-      const d = M.Manifold.difference(s, l);
-      s.delete(); l.delete();
-      s = d;
-    }
-    if (istLeer(s)) { s.delete(); return null; }
-    basis = s;
   } else {
     basis = baueKoerper(M, knoten.typ, knoten.params, assets);
   }
