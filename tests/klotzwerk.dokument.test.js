@@ -63,6 +63,29 @@ console.log('Gruppieren/Aufloesen:');
   check('Kind-Rotation eingerechnet', etwa(a.transform.rotation[2], 90, 1e-3));
 }
 
+console.log('Ueberschneiden-Modus:');
+{
+  const dok = D.neuesDokument();
+  const a = D.neuerKoerper(dok, 'quader');
+  const b = D.neuerKoerper(dok, 'quader');
+  const gId = D.gruppiere(dok, [a.id, b.id], 'ueberschneiden');
+  const g = D.findeKnoten(dok, gId);
+  check('modus gesetzt', g.modus === 'ueberschneiden', 'ist ' + g.modus);
+  check('Name Schnittgruppe', g.name === 'Schnittgruppe', 'ist ' + g.name);
+  const kopie = JSON.parse(JSON.stringify(dok));
+  check('Roundtrip erhaelt modus', kopie.objekte[0].modus === 'ueberschneiden');
+  D.loeseAuf(dok, gId);
+  check('Ungruppieren stellt 2 Objekte wieder her', dok.objekte.length === 2, 'sind ' + dok.objekte.length);
+}
+{
+  const dok = D.neuesDokument();
+  const a = D.neuerKoerper(dok, 'quader');
+  const b = D.neuerKoerper(dok, 'quader');
+  const gId = D.gruppiere(dok, [a.id, b.id]);
+  const g = D.findeKnoten(dok, gId);
+  check('ohne Modus KEIN modus-Feld', !('modus' in g), 'Feld vorhanden: ' + g.modus);
+}
+
 // --- Mat4-Helfer ---------------------------------------------------------
 console.log('Mat4:');
 {

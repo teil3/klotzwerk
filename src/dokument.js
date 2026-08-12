@@ -22,7 +22,8 @@
 
   var NAMEN = {
     quader: 'Quader', zylinder: 'Zylinder', kugel: 'Kugel', kegel: 'Kegel',
-    pyramide: 'Pyramide', torus: 'Torus', rohr: 'Rohr', gruppe: 'Gruppe'
+    pyramide: 'Pyramide', torus: 'Torus', rohr: 'Rohr', gruppe: 'Gruppe',
+    schnittgruppe: 'Schnittgruppe'
   };
 
   function neutralesTransform() {
@@ -130,7 +131,7 @@
     return kopie.id;
   }
 
-  function gruppiere(dok, ids) {
+  function gruppiere(dok, ids, modus) {
     if (!ids || ids.length < 2) throw new Error('Gruppieren braucht mindestens 2 Objekte');
     var kinder = [];
     ids.forEach(function (id) {
@@ -147,13 +148,14 @@
     var g = {
       id: 'g' + (dok.naechsteId++),
       typ: 'gruppe',
-      name: NAMEN.gruppe,
+      name: modus === 'ueberschneiden' ? NAMEN.schnittgruppe : NAMEN.gruppe,
       kinder: kinder,
       transform: neutralesTransform(),
       istLoch: false,
       farbe: (vorbild && vorbild.farbe) || STANDARD_FARBE,
       sichtbar: true
     };
+    if (modus === 'ueberschneiden') g.modus = 'ueberschneiden';
     dok.objekte.push(g);
     return g.id;
   }
