@@ -892,7 +892,7 @@
       dok.objekte.forEach(function (knoten) {
         vorhandene[knoten.id] = true;
         var mesh = vp.meshes[knoten.id];
-        var schluessel = JSON.stringify(knoten.typ === 'gruppe' ? knoten.kinder : knoten.params);
+        var schluessel = knoten.id + '|' + (knoten.modus || '') + '|' + JSON.stringify(knoten.typ === 'gruppe' ? knoten.kinder : knoten.params);
         if (mesh && mesh.userData.geoSchluessel !== schluessel) {
           // Geometrie veraltet (Params geaendert): neu holen
           szene.remove(mesh);

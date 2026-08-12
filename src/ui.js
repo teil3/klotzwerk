@@ -160,7 +160,7 @@
       // Kopien: BufferAttribute uebernimmt die Arrays
       return Promise.resolve({ vertProperties: asset.vertProperties.slice(), triVerts: asset.triVerts.slice() });
     }
-    var schluessel = knoten.id + '|' + JSON.stringify(knoten.typ === 'gruppe' ? knoten.kinder : knoten.params);
+    var schluessel = knoten.id + '|' + (knoten.modus || '') + '|' + JSON.stringify(knoten.typ === 'gruppe' ? knoten.kinder : knoten.params);
     if (zustand.meshCache[schluessel]) {
       var c = zustand.meshCache[schluessel];
       // Kopien zurueckgeben: BufferAttribute uebernimmt die Arrays
