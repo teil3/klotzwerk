@@ -701,7 +701,9 @@
         else setzeStreckBreite(neuB);
         return;
       }
-      if (!orbit.enabled) return;   // waehrend Gizmo-Drag nicht zoomen
+      // Waehrend Gizmo-Drag nicht zoomen; im Auswahl-Modus (orbit aus,
+      // Rahmen-Drag) bleibt das Zoomen aber erlaubt -- es kollidiert nicht.
+      if (!orbit.enabled && !boxauswahl) return;
       var r = renderer.domElement.getBoundingClientRect();
       zeigt.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       zeigt.y = -((e.clientY - r.top) / r.height) * 2 + 1;
@@ -771,8 +773,9 @@
       var treffer = ray.intersectObjects(liste, false);
       var neu = treffer.length ? [treffer[0].object.userData.id] : [];
       if (boxauswahl) {
-        // Auswahl-Modus: erst die Selektor-Pick-Phase bedienen, sonst das
-        // eingestellte Verhalten anwenden (Shift erzwingt Hinzufuegen)
+        // Auswahl-Modus: Ctrl-Klick gehoert der Kamera, dann die Selektor-
+        // Pick-Phase, sonst das eingestellte Verhalten (Shift = Hinzufuegen)
+        if (e.ctrlKey || e.metaKey) return;
         if (boxauswahl.selektorPick) {
           if (neu.length) {
             boxauswahl.selektorPick = false;
@@ -1358,6 +1361,10 @@
                      verhalten: verhalten || 'ersetzen', selektorPick: false };
       gizmoDetach();
       orbit.enabled = false;   // Linksdrag gehoert dem Rahmen
+      // Ctrl+Linksdrag soll wie gewohnt DREHEN. OrbitControls r124 kehrt die
+      // Aktion bei gedrücktem Ctrl/Meta/Shift um (ROTATE->PAN bzw.
+      // PAN->ROTATE) -- darum LEFT auf PAN mappen: mit Ctrl ergibt das ROTATE.
+      orbit.mouseButtons.LEFT = THREE.MOUSE.PAN;
     }
 
     function setzeBoxVerhalten(verhalten) {
@@ -1376,6 +1383,7 @@
       if (!boxauswahl) return;
       if (boxauswahl.div && boxauswahl.div.parentNode) boxauswahl.div.parentNode.removeChild(boxauswahl.div);
       orbit.enabled = true;
+      orbit.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
       boxauswahl = null;
     }
 
@@ -1416,9 +1424,24 @@
       callbacks.beiAuswahl(window.KlotzwerkAuswahl.wendeVerhaltenAn(vp.auswahl, treffer, verhalten));
     }
 
+    // Gehaltenes Ctrl (bzw. Cmd) gibt im Auswahl-Modus die Kamera frei:
+    // OrbitControls prueft enabled beim pointerdown, darum muss der Schalter
+    // schon auf der Taste umgelegt werden, nicht erst im Maus-Handler.
+    document.addEventListener('keydown', function (e) {
+      if (boxauswahl && (e.key === 'Control' || e.key === 'Meta')) orbit.enabled = true;
+    });
+    document.addEventListener('keyup', function (e) {
+      if (boxauswahl && (e.key === 'Control' || e.key === 'Meta')) orbit.enabled = false;
+    });
+    window.addEventListener('blur', function () {
+      if (boxauswahl) orbit.enabled = false;   // verpasstes keyup (Fenster-Wechsel)
+    });
+
     renderer.domElement.addEventListener('pointerdown', function (e) {
       if (!boxauswahl || e.button !== 0) return;
       if (boxauswahl.selektorPick) return;   // Pick-Phase: kein Rahmen, nur Klick
+      if (e.ctrlKey || e.metaKey) return;    // Ctrl-Drag: Kamera statt Rahmen
+      orbit.enabled = false;                 // Sicherheitsnetz bei verpasstem keyup
       boxauswahl.ziehStart = [e.clientX, e.clientY];
       boxauswahl.shift = e.shiftKey;
       boxauswahl.gezogen = false;
