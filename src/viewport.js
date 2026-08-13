@@ -1361,10 +1361,13 @@
                      verhalten: verhalten || 'ersetzen', selektorPick: false };
       gizmoDetach();
       orbit.enabled = false;   // Linksdrag gehoert dem Rahmen
-      // Ctrl+Linksdrag soll wie gewohnt DREHEN. OrbitControls r124 kehrt die
-      // Aktion bei gedrücktem Ctrl/Meta/Shift um (ROTATE->PAN bzw.
-      // PAN->ROTATE) -- darum LEFT auf PAN mappen: mit Ctrl ergibt das ROTATE.
+      // Ctrl+Drag soll die Kamera wie gewohnt bedienen (links drehen,
+      // rechts schieben). OrbitControls r124 kehrt die Aktion bei
+      // gedrücktem Ctrl/Meta/Shift um (ROTATE->PAN bzw. PAN->ROTATE) --
+      // darum beide Tasten invers mappen, damit MIT Ctrl das Gewohnte
+      // herauskommt.
       orbit.mouseButtons.LEFT = THREE.MOUSE.PAN;
+      orbit.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
     }
 
     function setzeBoxVerhalten(verhalten) {
@@ -1384,6 +1387,7 @@
       if (boxauswahl.div && boxauswahl.div.parentNode) boxauswahl.div.parentNode.removeChild(boxauswahl.div);
       orbit.enabled = true;
       orbit.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+      orbit.mouseButtons.RIGHT = THREE.MOUSE.PAN;
       boxauswahl = null;
     }
 
