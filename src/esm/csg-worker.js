@@ -5,13 +5,13 @@
  */
 import ManifoldModule from '../../vendor/manifold-3d/manifold.js';
 // ?v= muss der KERN_VERSION unten entsprechen (Cache-Bust, siehe ui.js)
-import { knotenZuManifold, manifoldZuMesh, pruefeAsset, schneideKnotenMehrfach, offsetKoerper, offsetBereich, trenneKnoten, bohreKanal, oeffneFlaeche, streckeKnoten, streckenVorschau } from './csg-kern.js?v=4';
+import { knotenZuManifold, manifoldZuMesh, pruefeAsset, schneideKnotenMehrfach, offsetKoerper, offsetBereich, trenneKnoten, bohreKanal, oeffneFlaeche, streckeKnoten, streckenVorschau } from './csg-kern.js?v=5';
 
 // Bei jeder Verhaltens-Aenderung am Rechenkern hochzaehlen (Gegenstueck:
 // KERN_VERSION in ui.js). Die UI warnt, wenn ein veralteter Worker aus dem
 // Browser-Cache antwortet -- ESM-Worker ueberleben normale Reloads, ein
 // neues Feature rechnet dann still mit altem Code.
-const KERN_VERSION = 4;
+const KERN_VERSION = 5;
 
 let M = null;
 const assets = {};   // assetId -> {vertProperties, triVerts, wasserdicht, name}
@@ -68,7 +68,7 @@ self.onmessage = async (e) => {
     }
     if (d.befehl === 'offsetBereich') {
       if (!M) throw new Error('Engine nicht initialisiert');
-      const tb = offsetBereich(M, d.knoten, d.indizes, d.richtung, d.wandstaerke, assets);
+      const tb = offsetBereich(M, d.knoten, d.indizes, d.richtung, d.wandstaerke, assets, d.extrusion);
       self.postMessage(
         { befehl: 'offsetErgebnis', anfrageId: d.anfrageId,
           vertProperties: tb.vertProperties, triVerts: tb.triVerts },

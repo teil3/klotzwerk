@@ -120,6 +120,48 @@ console.log('erweitereDreiecke (Ring ueber Kanten-Adjazenz):');
     check('Volumen: 22er-Turm minus Deck-Abtrag', etwaProzent(v, 8000, 0.03), v.toFixed(0) + ' soll ~8000');
   }
 
+  console.log('offsetBereich Extrusions-Modus (normalen vs. gerade):');
+  {
+    // Patch ueber eine Kante: Deckflaeche + Seitenflaeche y=-10. Der Form
+    // folgend (Normalen) erreicht der Deckel z=22; geradlinig zeigt die
+    // gemeinsame Mittelrichtung (0,-1,1)/sqrt2 -- der Deckel endet bei
+    // 20 + 2/sqrt2 und die Seite waechst um 2/sqrt2 nach -y.
+    const basisMesh = kern.manifoldZuMesh(kern.knotenZuManifold(M, knoten('quader', { breite: 20, tiefe: 20, hoehe: 20 }), true, {}));
+    const V = basisMesh.vertProperties, T = basisMesh.triVerts;
+    const patch = [];
+    for (let i = 0; i < T.length / 3; i++) {
+      let deck = true, seite = true;
+      for (let e = 0; e < 3; e++) {
+        if (Math.abs(V[T[i * 3 + e] * 3 + 2] - 20) > 1e-6) deck = false;
+        if (Math.abs(V[T[i * 3 + e] * 3 + 1] + 10) > 1e-6) seite = false;
+      }
+      if (deck || seite) patch.push(i);
+    }
+    check('Patch Deck+Seite = 4 Dreiecke', patch.length === 4, 'ist ' + patch.length);
+    function bbox(t) {
+      let zMax = -Infinity, yMin = Infinity, yMax = -Infinity, xMax = -Infinity;
+      for (let i = 0; i < t.vertProperties.length; i += 3) {
+        xMax = Math.max(xMax, t.vertProperties[i]);
+        yMin = Math.min(yMin, t.vertProperties[i + 1]);
+        yMax = Math.max(yMax, t.vertProperties[i + 1]);
+        zMax = Math.max(zMax, t.vertProperties[i + 2]);
+      }
+      return { yMin, yMax, xMax, zMax };
+    }
+    const mitNormalen = kern.offsetBereich(M, knoten('quader', { breite: 20, tiefe: 20, hoehe: 20 }), patch, 'aussen', 2, {}, 'normalen');
+    const bn = bbox(mitNormalen);
+    check('normalen: Deckel erreicht z=22', Math.abs(bn.zMax - 22) < 0.01, 'zMax ' + bn.zMax.toFixed(2));
+    const gerade = kern.offsetBereich(M, knoten('quader', { breite: 20, tiefe: 20, hoehe: 20 }), patch, 'aussen', 2, {}, 'gerade');
+    const bg = bbox(gerade);
+    const wurzel = 2 / Math.SQRT2;
+    check('gerade: Deckel endet bei 20 + 2/sqrt2', Math.abs(bg.zMax - (20 + wurzel)) < 0.01, 'zMax ' + bg.zMax.toFixed(2));
+    check('gerade: Seite waechst um 2/sqrt2 nach -y', Math.abs(bg.yMin - (-10 - wurzel)) < 0.01, 'yMin ' + bg.yMin.toFixed(2));
+    // Kein eps-Grat auf den NICHT gewaehlten Seiten: der Ueberlapp-Boden
+    // darf an den Patch-Raendern nicht aus der Basis ragen
+    check('gerade: kein Grat an der Rueckseite (yMax bleibt 10)', bg.yMax < 10.01, 'yMax ' + bg.yMax.toFixed(3));
+    check('gerade: kein Grat seitlich (xMax bleibt 10)', bg.xMax < 10.01, 'xMax ' + bg.xMax.toFixed(3));
+  }
+
   console.log('offsetBereich Fehlerfaelle:');
   {
     try {

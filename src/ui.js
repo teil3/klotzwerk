@@ -18,7 +18,7 @@
   // Muss zur KERN_VERSION in esm/csg-worker.js passen. Antwortet ein
   // Worker mit aelterer (oder ohne) Version, kommt er aus dem Browser-Cache
   // und rechnet mit altem Code -- dann laut warnen statt still falsch rechnen.
-  var KERN_VERSION = 4;
+  var KERN_VERSION = 5;
 
   var zustand = {
     dok: null,
@@ -252,7 +252,7 @@
     });
   }
 
-  function frageOffsetBereich(knoten, richtung, wandstaerke, indizes) {
+  function frageOffsetBereich(knoten, richtung, wandstaerke, indizes, extrusion) {
     var id = zustand.naechsteAnfrage++;
     return new Promise(function (resolve, reject) {
       zustand.anfragen[id] = { resolve: resolve, reject: reject };
@@ -261,7 +261,7 @@
         befehl: 'offsetBereich', anfrageId: id,
         knoten: JSON.parse(JSON.stringify(knoten)),
         richtung: richtung, wandstaerke: wandstaerke,
-        indizes: indizes
+        indizes: indizes, extrusion: extrusion
       });
     });
   }
@@ -1399,7 +1399,7 @@
   function starteOffsetModus(richtung) {
     if (zustand.offset) beendeOffsetModus();
     zustand.offset = { richtung: richtung, zielId: zustand.auswahl[0], wandstaerke: 2,
-                       bereichVerfuegbar: false, bereichAnzahl: 0 };
+                       bereichVerfuegbar: false, bereichAnzahl: 0, extrusion: 'normalen' };
     // Bereichswahl (nur Aufdicken/Abtragen): Flaechen im Viewport anklickbar,
     // das Werkzeug wirkt dann nur dort. Aushoehlen bleibt Ganz-Objekt.
     if (richtung !== 'innen') {
@@ -1485,7 +1485,7 @@
     var indizes = o.bereichVerfuegbar ? zustand.viewport.holeBereichDreiecke() : [];
     setStatus(texte.laeuft);
     var anfrage = indizes.length
-      ? frageOffsetBereich(knoten, o.richtung, w, indizes)
+      ? frageOffsetBereich(knoten, o.richtung, w, indizes, o.extrusion)
       : frageOffset(knoten, o.richtung, w);
     anfrage.then(function (t) {
       if (zustand.offset !== o) return;   // Modus inzwischen beendet oder neu gestartet
@@ -1765,6 +1765,19 @@
         bLeer.disabled = !o.bereichAnzahl;
         bLeer.addEventListener('click', function () { zustand.viewport.leereBereichsWahl(); });
         inhalt.appendChild(bLeer);
+        var lEx = document.createElement('label');
+        lEx.textContent = 'Extrusion';
+        var selEx = document.createElement('select');
+        [['normalen', 'Der Form folgend'], ['gerade', 'Geradlinig']].forEach(function (opt) {
+          var el = document.createElement('option');
+          el.value = opt[0];
+          el.textContent = opt[1];
+          selEx.appendChild(el);
+        });
+        selEx.value = o.extrusion;
+        selEx.addEventListener('change', function () { o.extrusion = selEx.value; });
+        lEx.appendChild(selEx);
+        inhalt.appendChild(lEx);
       }
       var bO = document.createElement('button');
       bO.type = 'button';

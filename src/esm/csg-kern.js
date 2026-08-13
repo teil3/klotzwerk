@@ -10,7 +10,7 @@
  */
 
 // ?v= wie KERN_VERSION im Worker (Cache-Bust, siehe ui.js)
-import { baueSdf } from './sdf.js?v=4';
+import { baueSdf } from './sdf.js?v=5';
 
 const SEGMENTE = 64;
 const GRAD = Math.PI / 180;
@@ -429,7 +429,10 @@ export function offsetKoerper(M, knoten, richtung, wandstaerke, assets) {
 // Boden, Waende ueber die Randkanten) wird vereinigt (aussen) bzw.
 // abgezogen (abtragen). Ein kleiner Epsilon-Ueberstand auf der Gegenseite
 // macht den Boolean numerisch robust.
-export function offsetBereich(M, knoten, indizes, richtung, wandstaerke, assets) {
+// extrusion: 'normalen' (Standard -- der Form folgend, winkelgewichtete
+// Vertex-Normalen) oder 'gerade' (alle Punkte in die flaechengewichtete
+// Mittelrichtung des Patches, wie eine klassische lineare Extrusion).
+export function offsetBereich(M, knoten, indizes, richtung, wandstaerke, assets, extrusion) {
   if (!indizes || !indizes.length) throw new Error('Kein Bereich ausgewählt.');
   // Die Indizes stammen aus der ANZEIGE-Triangulierung (Objektraum, 'mesh'-
   // Befehl). Das Objektraum-Mesh wird hier selbst nach Welt transformiert --
@@ -490,6 +493,24 @@ export function offsetBereich(M, knoten, indizes, richtung, wandstaerke, assets)
       const l = Math.hypot(n[0], n[1], n[2]);
       if (l > 1e-30) { n[0] /= l; n[1] /= l; n[2] /= l; }
     });
+    // Geradlinig: eine gemeinsame Richtung fuer die WANDSTAERKE-Seite (Summe
+    // der Dreiecks-Kreuzprodukte ist automatisch flaechengewichtet). Die
+    // eps-Ueberlapp-Seite folgt weiterhin den lokalen Normalen -- entlang der
+    // gemeinsamen Schraege wuerde sie an den Patch-Raendern als duenner Grat
+    // aus der Basis ragen.
+    let rGerade = null;
+    if (extrusion === 'gerade') {
+      let rx = 0, ry = 0, rz = 0;
+      indizes.forEach(function (t) {
+        const i0 = T[t * 3], i1 = T[t * 3 + 1], i2 = T[t * 3 + 2];
+        const ux = V[i1 * 3] - V[i0 * 3], uy = V[i1 * 3 + 1] - V[i0 * 3 + 1], uz = V[i1 * 3 + 2] - V[i0 * 3 + 2];
+        const vx = V[i2 * 3] - V[i0 * 3], vy = V[i2 * 3 + 1] - V[i0 * 3 + 1], vz = V[i2 * 3 + 2] - V[i0 * 3 + 2];
+        rx += uy * vz - uz * vy; ry += uz * vx - ux * vz; rz += ux * vy - uy * vx;
+      });
+      const rl = Math.hypot(rx, ry, rz);
+      if (rl < 1e-9) throw new Error('Die gewählten Flächen heben sich gegenseitig auf — geradlinige Extrusion nicht möglich.');
+      rGerade = [rx / rl, ry / rl, rz / rl];
+    }
 
     // Zwei Kopien jedes Patch-Vertex: aussen (Deckel) und innen (Boden)
     const eps = Math.min(0.2, wandstaerke / 4);
@@ -499,8 +520,14 @@ export function offsetBereich(M, knoten, indizes, richtung, wandstaerke, assets)
     const wv = [];
     norm.forEach(function (n, vi) {
       neuIndex.set(vi, wv.length / 3);
-      wv.push(V[vi * 3] + n[0] * nachAussen, V[vi * 3 + 1] + n[1] * nachAussen, V[vi * 3 + 2] + n[2] * nachAussen);
-      wv.push(V[vi * 3] - n[0] * nachInnen, V[vi * 3 + 1] - n[1] * nachInnen, V[vi * 3 + 2] - n[2] * nachInnen);
+      // Die Wandstaerke-Seite folgt bei 'gerade' der gemeinsamen Richtung;
+      // die eps-Seite bleibt immer auf den lokalen Normalen (siehe oben).
+      // Beim Abtragen liegt die Wandstaerke auf der INNEN-Seite.
+      const wRicht = rGerade || n;
+      const ra = richtung === 'abtragen' ? n : wRicht;
+      const ri = richtung === 'abtragen' ? wRicht : n;
+      wv.push(V[vi * 3] + ra[0] * nachAussen, V[vi * 3 + 1] + ra[1] * nachAussen, V[vi * 3 + 2] + ra[2] * nachAussen);
+      wv.push(V[vi * 3] - ri[0] * nachInnen, V[vi * 3 + 1] - ri[1] * nachInnen, V[vi * 3 + 2] - ri[2] * nachInnen);
     });
     // neuIndex haelt den absoluten Index der Aussen-Kopie; Innen liegt direkt dahinter
     function oben(vi) { return neuIndex.get(vi); }
