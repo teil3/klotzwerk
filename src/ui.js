@@ -1933,6 +1933,10 @@
     name.className = 'k3d-zeile-name';
     name.textContent = k.name + (k.istLoch ? ' (Negativ)' : '');
     name.title = name.textContent;
+    if (D.enthaeltNichtWasserdicht(k)) {
+      name.classList.add('k3d-zeile-undicht');
+      name.title += ' — nicht wasserdicht: platzieren und exportieren geht, als Negativ oder in Gruppen nicht.';
+    }
     zeile.appendChild(name);
 
     var korb = document.createElement('button');
