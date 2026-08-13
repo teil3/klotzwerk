@@ -9,7 +9,8 @@
  * tests/generators/3d-konstruktor.csg.test.js faengt Abweichungen.
  */
 
-import { baueSdf } from './sdf.js';
+// ?v= wie KERN_VERSION im Worker (Cache-Bust, siehe ui.js)
+import { baueSdf } from './sdf.js?v=2';
 
 const SEGMENTE = 64;
 const GRAD = Math.PI / 180;

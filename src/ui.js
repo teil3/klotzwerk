@@ -15,6 +15,11 @@
 
   var KANAL_DURCHMESSER = 3;   // Standard-Lochdurchmesser des Entleerungskanals in mm
 
+  // Muss zur KERN_VERSION in esm/csg-worker.js passen. Antwortet ein
+  // Worker mit aelterer (oder ohne) Version, kommt er aus dem Browser-Cache
+  // und rechnet mit altem Code -- dann laut warnen statt still falsch rechnen.
+  var KERN_VERSION = 2;
+
   var zustand = {
     dok: null,
     historie: null,
@@ -59,13 +64,20 @@
   function starteWorker() {
     // Worker- und WASM-URL script-relativ bauen: Worker loesen relative URLs
     // gegen ihren eigenen Ort auf (bekannte Falle).
-    var workerUrl = new URL('esm/csg-worker.js', SCRIPT_BASIS);
+    // ?v=KERN_VERSION: alte Worker-Eintraege im Browser-Cache ueberleben
+    // sogar Hard-Reloads -- die Versions-Query erzwingt bei jedem Kern-Bump
+    // einen frischen Fetch (gleiche Query auch in den Imports des Workers).
+    var workerUrl = new URL('esm/csg-worker.js?v=' + KERN_VERSION, SCRIPT_BASIS);
     var wasmUrl = new URL('../vendor/manifold-3d/manifold.wasm', SCRIPT_BASIS).href;
     var w = new Worker(workerUrl, { type: 'module' });
     zustand.worker = w;
     w.onmessage = function (e) {
       var d = e.data;
       if (d.befehl === 'bereit') {
+        if (d.kernVersion !== KERN_VERSION) {
+          setStatus('Der Rechenkern im Browser-Cache ist veraltet — lade die Seite einmal mit Ctrl+Shift+R neu, sonst rechnen die Werkzeuge falsch.', true);
+          return;   // Engine bewusst NICHT freigeben
+        }
         zustand.engineBereit = true;
         (zustand.assetsGeladen || Promise.resolve()).then(function () {
           // Verwaiste Assets (kein Import-Knoten referenziert sie mehr)

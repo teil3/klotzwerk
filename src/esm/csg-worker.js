@@ -4,7 +4,14 @@
  * importierte STL-Geometrie fuer 'mesh'-Anfragen (Gruppen/Export).
  */
 import ManifoldModule from '../../vendor/manifold-3d/manifold.js';
-import { knotenZuManifold, manifoldZuMesh, pruefeAsset, schneideKnotenMehrfach, offsetKoerper, trenneKnoten, bohreKanal, oeffneFlaeche, streckeKnoten, streckenVorschau } from './csg-kern.js';
+// ?v= muss der KERN_VERSION unten entsprechen (Cache-Bust, siehe ui.js)
+import { knotenZuManifold, manifoldZuMesh, pruefeAsset, schneideKnotenMehrfach, offsetKoerper, trenneKnoten, bohreKanal, oeffneFlaeche, streckeKnoten, streckenVorschau } from './csg-kern.js?v=2';
+
+// Bei jeder Verhaltens-Aenderung am Rechenkern hochzaehlen (Gegenstueck:
+// KERN_VERSION in ui.js). Die UI warnt, wenn ein veralteter Worker aus dem
+// Browser-Cache antwortet -- ESM-Worker ueberleben normale Reloads, ein
+// neues Feature rechnet dann still mit altem Code.
+const KERN_VERSION = 2;
 
 let M = null;
 const assets = {};   // assetId -> {vertProperties, triVerts, wasserdicht, name}
@@ -16,7 +23,7 @@ self.onmessage = async (e) => {
       try {
         M = await ManifoldModule({ locateFile: () => d.wasmUrl });
         M.setup();
-        self.postMessage({ befehl: 'bereit' });
+        self.postMessage({ befehl: 'bereit', kernVersion: KERN_VERSION });
       } catch (err) {
         self.postMessage({ befehl: 'initFehler', meldung: String((err && err.message) || err) });
       }
