@@ -97,6 +97,9 @@
    Der Werkzeug-Titel ist immer das erste Element; Zahlenfelder erben die
    normalen .k3d-panel-Label-Styles, nur die Radio-Zeilen sind flex. */
 #k3d-toolbereich { border-bottom: 1px solid #ddd; margin-bottom: 8px; padding-bottom: 10px; }
+/* Mehrfachauswahl-Block (gemeinsame Farbwahl) ueber der Objektliste */
+.k3d-mehrfach { border-bottom: 1px solid #ddd; margin-bottom: 8px; padding-bottom: 8px; }
+.k3d-mehrfach .k3d-panel-leer { margin: 0 0 4px; }
 #k3d-toolbereich-inhalt p { margin: 0 0 4px; }
 #k3d-toolbereich-inhalt > p:first-child { font-weight: 600; font-size: 13px; color: #444; }
 #k3d-toolbereich-inhalt label.k3d-tool-radio { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 3px 0; cursor: pointer; }

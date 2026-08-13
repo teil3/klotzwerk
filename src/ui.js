@@ -2093,6 +2093,21 @@
       inhalt.appendChild(p);
       return;
     }
+    // Mehrfachauswahl: gemeinsame Farbwahl ueber der Liste -- ein Klick
+    // faerbt alle gewaehlten Objekte (ein Undo-Schritt)
+    if (zustand.auswahl.length > 1) {
+      var gewaehlte = zustand.auswahl.map(function (id) { return D.findeKnoten(zustand.dok, id); }).filter(Boolean);
+      if (gewaehlte.length > 1) {
+        var mehrfach = document.createElement('div');
+        mehrfach.className = 'k3d-mehrfach';
+        var mt = document.createElement('p');
+        mt.className = 'k3d-panel-leer';
+        mt.textContent = gewaehlte.length + ' Objekte ausgewählt';
+        mehrfach.appendChild(mt);
+        mehrfach.appendChild(baueFarbwahl(gewaehlte));
+        inhalt.appendChild(mehrfach);
+      }
+    }
     var liste = document.createElement('div');
     liste.className = 'k3d-liste';
     zustand.dok.objekte.forEach(function (k) {
@@ -2173,7 +2188,18 @@
     '#34558b', '#8e6cc0', '#e57fb1', '#8d6e63'
   ];
 
-  function baueFarbwahl(k) {
+  // Nimmt einen Knoten oder eine Liste: bei mehreren wird die Farbe auf
+  // alle angewendet (EIN Undo-Schritt); die aktive Kachel markiert nur eine
+  // Farbe, die wirklich alle gemeinsam haben.
+  function baueFarbwahl(ks) {
+    var knotenListe = Array.isArray(ks) ? ks : [ks];
+    var gemeinsam = knotenListe.every(function (k) { return k.farbe === knotenListe[0].farbe; })
+      ? knotenListe[0].farbe : null;
+    function setzeAlle(farbe) {
+      knotenListe.forEach(function (k) { D.setzeFarbe(zustand.dok, k.id, farbe); });
+      nachAenderung();
+      zeichnePanel();
+    }
     var wrap = document.createElement('div');
     wrap.className = 'k3d-farbwahl';
     var titel = document.createElement('span');
@@ -2185,28 +2211,20 @@
     PALETTE.forEach(function (farbe) {
       var b = document.createElement('button');
       b.type = 'button';
-      b.className = 'k3d-farbkachel' + (farbe === k.farbe ? ' aktiv' : '');
+      b.className = 'k3d-farbkachel' + (farbe === gemeinsam ? ' aktiv' : '');
       b.style.background = farbe;
       b.title = farbe;
-      b.addEventListener('click', function () {
-        D.setzeFarbe(zustand.dok, k.id, farbe);
-        nachAenderung();
-        zeichnePanel();
-      });
+      b.addEventListener('click', function () { setzeAlle(farbe); });
       kacheln.appendChild(b);
     });
     var frei = document.createElement('input');
     frei.type = 'color';
     frei.className = 'k3d-farbe-frei';
-    frei.value = /^#[0-9a-f]{6}$/i.test(k.farbe || '') ? k.farbe : D.STANDARD_FARBE;
+    frei.value = /^#[0-9a-f]{6}$/i.test(gemeinsam || '') ? gemeinsam : D.STANDARD_FARBE;
     frei.title = 'Eigene Farbe wählen';
     // 'change' statt 'input': sonst wird jede Mausbewegung im
     // Browser-Farbdialog ein eigener Undo-Schritt
-    frei.addEventListener('change', function () {
-      D.setzeFarbe(zustand.dok, k.id, frei.value);
-      nachAenderung();
-      zeichnePanel();
-    });
+    frei.addEventListener('change', function () { setzeAlle(frei.value); });
     kacheln.appendChild(frei);
     wrap.appendChild(kacheln);
     return wrap;
