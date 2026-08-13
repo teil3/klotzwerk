@@ -790,6 +790,59 @@
     return JSON.stringify({ format: 't3-konstruktor-projekt', version: 1, dok: dok, assets: assets });
   }
 
+  // --- Einzelteile-Export: eindeutige Teile gruppieren ---------------------
+  // Wie Onshape «export unique parts as individual files»: Eindeutigkeit =
+  // gleiche Geometrie im Objektraum (Typ + Params bzw. Import-Asset bzw.
+  // Gruppen-Kinder samt relativer Lage) + Skalierung. Position und Drehung
+  // des Teils selbst unterscheiden nicht. Sind Negative im Umfang, schneiden
+  // die positionsabhaengig ins Ergebnis -- dann zaehlt die Lage mit und
+  // praktisch jedes Teil ist eindeutig.
+
+  function geometrieSchluessel(k, mitLage) {
+    var kern;
+    if (k.typ === 'import') kern = { asset: k.params.assetId };
+    else if (k.typ === 'gruppe') {
+      kern = { modus: k.modus || '', kinder: k.kinder.map(function (kind) {
+        return geometrieSchluessel(kind, true);   // in der Gruppe zaehlt die relative Lage
+      }) };
+    } else kern = { typ: k.typ, params: k.params };
+    var s = { kern: kern, skalierung: k.transform.skalierung };
+    if (mitLage) {
+      s.position = k.transform.position;
+      s.rotation = k.transform.rotation;
+      s.istLoch = !!k.istLoch;
+    }
+    return s;
+  }
+
+  function bereinigeDateiname(name) {
+    var n = String(name || 'Teil').replace(/\.(stl|obj|3mf)$/i, '');
+    n = n.replace(/[\/\\:*?"<>|]/g, '_').replace(/\s+/g, '_');
+    return n || 'Teil';
+  }
+
+  function gruppiereEindeutigeTeile(objekte) {
+    var hatLoecher = objekte.some(function (k) { return k.istLoch; });
+    var gruppen = [], nachSchluessel = {};
+    objekte.forEach(function (k) {
+      if (k.istLoch) return;   // Negative sind keine eigenen Teile
+      var s = JSON.stringify(geometrieSchluessel(k, hatLoecher));
+      if (nachSchluessel[s]) { nachSchluessel[s].anzahl++; return; }
+      var g = { objekt: k, anzahl: 1 };
+      nachSchluessel[s] = g;
+      gruppen.push(g);
+    });
+    var vergeben = {};
+    gruppen.forEach(function (g) {
+      var basis = bereinigeDateiname(g.objekt.name) + (g.anzahl > 1 ? '-' + g.anzahl + 'x' : '');
+      var name = basis, i = 2;
+      while (vergeben[name]) { name = basis + '-' + i; i++; }
+      vergeben[name] = true;
+      g.dateiname = name + '.stl';
+    });
+    return { teile: gruppen, hatLoecher: hatLoecher };
+  }
+
   function importiereProjekt(text) {
     var p;
     try { p = JSON.parse(text); } catch (e) { p = null; }
@@ -812,6 +865,8 @@
     baueBinaerSTL: baueBinaerSTL,
     baueOBJ: baueOBJ,
     baue3MF: baue3MF,
+    baueZip: baueZip,
+    gruppiereEindeutigeTeile: gruppiereEindeutigeTeile,
     parse3MF: parse3MF,
     parseOBJ: parseOBJ,
     parseMTL: parseMTL,

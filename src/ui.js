@@ -2218,7 +2218,7 @@
         var asset = window.KlotzwerkAssets.hole(k.params.assetId);
         if (asset) {
           anfragen.push(Promise.resolve({
-            name: k.name, farbe: k.farbe,
+            id: k.id, name: k.name, farbe: k.farbe,
             vertProperties: IO.transformiereVertices(asset.vertProperties, D.matAusTransform(k.transform)),
             triVerts: asset.triVerts
           }));
@@ -2231,17 +2231,49 @@
         kinder: [k].concat(loecher)
       };
       anfragen.push(frageMesh(wurzel).then(function (daten) {
-        return daten ? { name: k.name, farbe: k.farbe,
+        return daten ? { id: k.id, name: k.name, farbe: k.farbe,
                          vertProperties: daten.vertProperties, triVerts: daten.triVerts } : null;
       }));
     });
     return Promise.all(anfragen).then(function (teile) { return teile.filter(Boolean); });
   }
 
-  function fuehreExportAus(umfang, format) {
+  function fuehreExportAus(umfang, format, einzelteile) {
     var objekte = umfang === 'auswahl'
       ? zustand.dok.objekte.filter(function (k) { return zustand.auswahl.indexOf(k.id) >= 0; })
       : zustand.dok.objekte;
+    if (format === 'stl' && einzelteile) {
+      // Einzelteile-Export (wie Onshape): eine STL pro eindeutigem Teil,
+      // gebuendelt als ZIP. Verrechnung pro Teil wie beim Farb-Export
+      // (Negative werden von jedem Solid abgezogen).
+      if (objekte.length === 0) {
+        setStatus('Noch nichts zu exportieren — platziere zuerst einen Körper.', true);
+        return;
+      }
+      setStatus('Modell wird verrechnet …');
+      var gruppiert = IO.gruppiereEindeutigeTeile(objekte);
+      var loecher = objekte.filter(function (k) { return k.istLoch; });
+      var exportObjekte = gruppiert.teile.map(function (t) { return t.objekt; }).concat(loecher);
+      sammleFarbTeile(exportObjekte).then(function (teile) {
+        var nachId = {};
+        gruppiert.teile.forEach(function (t) { nachId[t.objekt.id] = t; });
+        var dateien = [];
+        teile.forEach(function (teil) {
+          var g = nachId[teil.id];
+          if (!g) return;   // z.B. von den Negativen komplett entferntes Teil
+          dateien.push({ name: g.dateiname, inhalt: new Uint8Array(IO.baueBinaerSTL(teil.vertProperties, teil.triVerts)) });
+        });
+        if (dateien.length === 0) {
+          setStatus('Das Ergebnis ist leer — die Negative entfernen alles.', true);
+          return;
+        }
+        setStatus('Bereit.');
+        IO.downloadDatei(IO.baueZip(dateien), 'teil3-konstruktion-teile.zip', 'application/zip');
+      }).catch(function (err) {
+        setStatus('Verrechnen fehlgeschlagen (' + err.message + ').', true);
+      });
+      return;
+    }
     if (format === 'stl') {
       exportiereVerrechnet(objekte, function (buf) { IO.downloadDatei(buf, 'teil3-konstruktion.stl'); });
       return;
@@ -2322,6 +2354,24 @@
       ['obj', 'OBJ mit Farben (+ MTL-Datei)'],
       ['3mf', '3MF mit Farben']
     ]);
+    // Einzelteile-Option (nur STL): eine Datei pro eindeutigem Teil, als ZIP
+    var einzelLabel = document.createElement('label');
+    einzelLabel.className = 'k3d-export-einzel';
+    var einzelBox = document.createElement('input');
+    einzelBox.type = 'checkbox';
+    einzelLabel.appendChild(einzelBox);
+    einzelLabel.appendChild(document.createTextNode(
+      ' Eindeutige Teile als einzelne STL-Dateien (ZIP) — gleiche Teile nur einmal, Stückzahl im Dateinamen'));
+    dialog.appendChild(einzelLabel);
+    function passeEinzelAn() {
+      var stl = dialog.querySelector('input[name=k3d-export-format]:checked').value === 'stl';
+      einzelBox.disabled = !stl;
+      einzelLabel.style.opacity = stl ? '' : '0.5';
+    }
+    Array.prototype.forEach.call(dialog.querySelectorAll('input[name=k3d-export-format]'), function (r) {
+      r.addEventListener('change', passeEinzelAn);
+    });
+    passeEinzelAn();
     var knoepfe = document.createElement('div');
     knoepfe.className = 'k3d-dialog-knoepfe';
     var bAb = document.createElement('button');
@@ -2347,8 +2397,9 @@
     bOk.addEventListener('click', function () {
       var umfang = dialog.querySelector('input[name=k3d-export-umfang]:checked').value;
       var format = dialog.querySelector('input[name=k3d-export-format]:checked').value;
+      var einzel = einzelBox.checked && !einzelBox.disabled;
       schliessen();
-      fuehreExportAus(umfang, format);
+      fuehreExportAus(umfang, format, einzel);
     });
     // Im Vollbild werden Elemente ausserhalb des Fullscreen-Containers nicht
     // gerendert -- darum an die Seite haengen, nicht an den Body.
