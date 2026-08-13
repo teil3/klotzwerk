@@ -93,12 +93,15 @@
 #btn-import.k3d-drop-ziel { outline: 2px dashed #5a8dc8; outline-offset: -2px; background: #eef4fb; }
 /* Aufgezogener Auswahl-Rahmen (Box-Select) ueber dem Viewport */
 .k3d-box-rahmen { position: absolute; border: 1px dashed #2a6fbd; background: rgba(90, 141, 200, 0.12); pointer-events: none; z-index: 6; }
-/* Tool-Bereich oberhalb der Objektliste: Einstellungen des aktiven Werkzeugs */
+/* Tool-Bereich oberhalb der Objektliste: Einstellungen des aktiven Werkzeugs.
+   Der Werkzeug-Titel ist immer das erste Element; Zahlenfelder erben die
+   normalen .k3d-panel-Label-Styles, nur die Radio-Zeilen sind flex. */
 #k3d-toolbereich { border-bottom: 1px solid #ddd; margin-bottom: 8px; padding-bottom: 10px; }
-#k3d-toolbereich-inhalt p { margin: 0 0 4px; font-weight: 600; font-size: 13px; color: #444; }
-#k3d-toolbereich-inhalt label { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 3px 0; cursor: pointer; }
+#k3d-toolbereich-inhalt p { margin: 0 0 4px; }
+#k3d-toolbereich-inhalt > p:first-child { font-weight: 600; font-size: 13px; color: #444; }
+#k3d-toolbereich-inhalt label.k3d-tool-radio { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 3px 0; cursor: pointer; }
 #k3d-toolbereich-inhalt input[type="radio"] { margin: 0; width: auto; }
-#k3d-toolbereich-inhalt .btn { margin-top: 8px; }
+#k3d-toolbereich-inhalt .btn { margin-top: 8px; margin-right: 6px; }
 
 /* Navigationswuerfel oben links im Viewport (Tinkercad-Stil) */
 .k3d-navwuerfel { position: absolute; top: 10px; left: 10px; z-index: 5; display: flex; flex-direction: column; align-items: center; gap: 6px; }

@@ -1530,248 +1530,15 @@
     var bereich = $('k3d-toolbereich');
     if (!bereich) return;
     var inhalt = $('k3d-toolbereich-inhalt');
-    if (!zustand.boxauswahl) {
-      bereich.hidden = true;
-      inhalt.innerHTML = '';
-      return;
-    }
-    bereich.hidden = false;
     inhalt.innerHTML = '';
-    var titel = document.createElement('p');
-    titel.textContent = 'Auswählen';
-    inhalt.appendChild(titel);
-    [['ersetzen', 'Ersetzen'], ['hinzufuegen', 'Hinzufügen (wie Shift)'], ['entfernen', 'Entfernen']].forEach(function (o) {
-      var label = document.createElement('label');
-      var radio = document.createElement('input');
-      radio.type = 'radio';
-      radio.name = 'k3d-auswahl-verhalten';
-      radio.value = o[0];
-      radio.checked = zustand.boxauswahl.verhalten === o[0];
-      radio.addEventListener('change', function () {
-        zustand.boxauswahl.verhalten = o[0];
-        zustand.viewport.setzeBoxVerhalten(o[0]);
-      });
-      label.appendChild(radio);
-      label.appendChild(document.createTextNode(o[1]));
-      inhalt.appendChild(label);
-    });
-    var bSel = document.createElement('button');
-    bSel.type = 'button';
-    bSel.className = 'btn btn-default' + (zustand.boxauswahl.selektorAktiv ? ' k3d-aktiv' : '');
-    bSel.textContent = zustand.boxauswahl.selektorAktiv ? 'Selektor anklicken …' : 'Objekt als Selektor wählen';
-    bSel.title = 'Der nächste Klick bestimmt das Selektor-Objekt — gewählt wird alles, was sich mit ihm überschneidet (gemäss Verhalten oben)';
-    bSel.addEventListener('click', function () {
-      if (zustand.boxauswahl.selektorAktiv) {
-        zustand.boxauswahl.selektorAktiv = false;
-        zustand.viewport.brichSelektorPickAb();
-        setStatus('Selektor-Wahl abgebrochen.');
-      } else {
-        zustand.boxauswahl.selektorAktiv = true;
-        zustand.viewport.starteSelektorPick();
-        setStatus('Selektor-Objekt im Viewport anklicken — gewählt wird alles, was sich damit überschneidet.');
-      }
-      zeichneToolbereich();
-    });
-    inhalt.appendChild(bSel);
+    zeichneToolInhalt(inhalt);
+    bereich.hidden = inhalt.children.length === 0;
   }
 
-  function kopieOhneLoch(k) {
-    var kopie = JSON.parse(JSON.stringify(k));
-    kopie.istLoch = false;   // der Selektor-Test schneidet, er zieht nicht ab
-    return kopie;
-  }
-
-  function waehleSelektor(selektorId) {
-    var mz = zustand.boxauswahl;
-    if (!mz) return;
-    mz.selektorAktiv = false;
-    zeichneToolbereich();
-    var selektor = D.findeKnoten(zustand.dok, selektorId);
-    if (!selektor) return;
-    var selektorBox = zustand.viewport.holeWeltBBox(selektorId);
-    var selektorUndicht = D.enthaeltNichtWasserdicht(selektor);
-    setStatus('Überschneidungen mit «' + selektor.name + '» werden geprüft …');
-    var anfragen = zustand.dok.objekte
-      .filter(function (k) { return k.id !== selektorId; })
-      .map(function (k) {
-        // BBox-Vorfilter; unsichtbare Objekte (BBox null) fallen raus
-        var box = zustand.viewport.holeWeltBBox(k.id);
-        if (!window.KlotzwerkAuswahl.bboxUeberlappt(selektorBox, box)) return Promise.resolve(null);
-        // Nicht wasserdicht kann nicht durch die CSG: BBox-Ueberlapp als Naeherung
-        if (selektorUndicht || D.enthaeltNichtWasserdicht(k)) return Promise.resolve(k.id);
-        var probe = {
-          id: 'probe', typ: 'gruppe', modus: 'ueberschneiden', istLoch: false,
-          transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] },
-          kinder: [kopieOhneLoch(selektor), kopieOhneLoch(k)]
-        };
-        return frageMesh(probe).then(function (daten) { return daten ? k.id : null; })
-          .catch(function () { return null; });
-      });
-    Promise.all(anfragen).then(function (ids) {
-      if (zustand.boxauswahl !== mz) return;   // Modus inzwischen beendet
-      var treffer = ids.filter(Boolean);
-      setzeAuswahl(window.KlotzwerkAuswahl.wendeVerhaltenAn(zustand.auswahl, treffer, mz.verhalten));
-      setStatus(treffer.length === 1
-        ? '1 Objekt überschneidet sich mit «' + selektor.name + '».'
-        : treffer.length + ' Objekte überschneiden sich mit «' + selektor.name + '».');
-    });
-  }
-
-  // --- Massstab (zwei Punkte messen, auf Wunschmass skalieren) ------------
-
-  function starteMessenModus() {
-    zustand.viewport.starteMessModus();
-    zustand.messen = { zielId: null, distanz: null };
-    $('btn-messen').classList.add('k3d-aktiv');
-    aktualisiereWerkzeugleiste();
-    zeichnePanel();
-    setStatus('Zwei Eckpunkte am selben Objekt anklicken — der Marker springt auf den nächsten Eckpunkt.');
-  }
-
-  function beendeMessenModus() {
-    if (!zustand.messen) return;
-    zustand.messen = null;
-    zustand.viewport.beendeMessModus();
-    $('btn-messen').classList.remove('k3d-aktiv');
-    aktualisiereWerkzeugleiste();
-  }
-
-  function brichMessenAb() {
-    if (!zustand.messen) return;
-    beendeMessenModus();
-    zustand.viewport.setzeAuswahl(zustand.auswahl);   // Gizmo zurueck ans Objekt
-    zeichnePanel();
-  }
-
-  function skaliereAufMass(eingabe) {
-    var mz = zustand.messen;
-    if (!mz || mz.distanz === null) return;
-    var wert = rechne(eingabe);
-    var faktor = wert === null ? null : Mess.skalierFaktor(mz.distanz, wert);
-    if (faktor === null) {
-      setStatus('Ungültige Länge — eine Zahl grösser 0 eingeben.', true);
-      return;
-    }
-    var k = D.findeKnoten(zustand.dok, mz.zielId);
-    if (!k) { brichMessenAb(); return; }
-    k.transform = Mess.wendeFaktor(k.transform, faktor);
-    nachAenderung();
-    // zeichneAlles (in nachAenderung) hat das Mesh schon skaliert -- die
-    // Messung zeigt jetzt das Wunschmass, weitermessen bleibt moeglich
-    mz.distanz = zustand.viewport.messungDistanz();
-    zeichnePanel();
-    setStatus('Auf ' + (Math.round(wert * 100) / 100) + ' mm skaliert.');
-  }
-
-  function klickAufZeile(id, e) {
-    var alle = zustand.dok.objekte.map(function (k) { return k.id; });
-    var neu;
-    if (e.shiftKey && zustand.listenAnker && alle.indexOf(zustand.listenAnker) >= 0) {
-      var a = alle.indexOf(zustand.listenAnker), b = alle.indexOf(id);
-      neu = alle.slice(Math.min(a, b), Math.max(a, b) + 1);
-    } else if (e.ctrlKey || e.metaKey) {
-      neu = zustand.auswahl.indexOf(id) >= 0
-        ? zustand.auswahl.filter(function (x) { return x !== id; })
-        : zustand.auswahl.concat([id]);
-      zustand.listenAnker = id;
-    } else {
-      // Klick auf die bereits aktive (aufgeklappte) Zeile klappt sie wieder zu
-      neu = (zustand.auswahl.length === 1 && zustand.auswahl[0] === id) ? [] : [id];
-    }
-    setzeAuswahl(neu);
-  }
-
-  function setzeAuswahl(ids, quelle) {
-    if (zustand.schnitt) brichSchnittAb();
-    if (zustand.strecken) brichStreckenAb();
-    if (zustand.offset) brichOffsetAb();
-    if (zustand.kanal && !(ids.length === 1 && ids[0] === zustand.kanal.zielId)) brichKanalAb();
-    if (zustand.anlegen) brichAnlegenAb();
-    if (zustand.messen) brichMessenAb();
-    zustand.auswahl = ids;
-    if (ids.length === 1) zustand.listenAnker = ids[0];
-    zustand.viewport.setzeAuswahl(ids);
-    zeichnePanel();
-    aktualisiereWerkzeugleiste();
-    if (quelle === 'viewport' && ids.length === 1) {
-      var zeile = document.querySelector('#k3d-panel-inhalt .k3d-zeile[data-id="' + ids[0] + '"]');
-      if (zeile) zeile.scrollIntoView({ block: 'nearest' });
-    }
-  }
-
-  // Wertet einen einfachen Rechenausdruck aus: + - * /, Klammern, Dezimal-
-  // punkt oder -komma. Rekursiver Abstieg, KEIN eval. Liefert null bei
-  // ungueltiger Eingabe -- der Aufrufer setzt dann den alten Wert zurueck.
-  function rechne(text) {
-    var s = String(text).replace(/,/g, '.').replace(/\s+/g, '');
-    if (!s || /[^0-9.+\-*/()]/.test(s)) return null;
-    var pos = 0;
-    function ausdruck() {
-      var w = term();
-      while (w !== null && (s[pos] === '+' || s[pos] === '-')) {
-        var op = s[pos++];
-        var r = term();
-        if (r === null) return null;
-        w = op === '+' ? w + r : w - r;
-      }
-      return w;
-    }
-    function term() {
-      var w = faktor();
-      while (w !== null && (s[pos] === '*' || s[pos] === '/')) {
-        var op = s[pos++];
-        var r = faktor();
-        if (r === null) return null;
-        w = op === '*' ? w * r : w / r;
-      }
-      return w;
-    }
-    function faktor() {
-      if (s[pos] === '+') { pos++; return faktor(); }
-      if (s[pos] === '-') { pos++; var f = faktor(); return f === null ? null : -f; }
-      if (s[pos] === '(') {
-        pos++;
-        var w = ausdruck();
-        if (w === null || s[pos] !== ')') return null;
-        pos++;
-        return w;
-      }
-      var m = /^\d*\.?\d+/.exec(s.slice(pos));
-      if (!m) return null;
-      pos += m[0].length;
-      return parseFloat(m[0]);
-    }
-    var erg = ausdruck();
-    if (erg === null || pos !== s.length || !isFinite(erg)) return null;
-    return erg;
-  }
-
-  // Scrollrad auf Zahlenfeldern: ein Tick = ±1, die Seite scrollt nicht mit.
-  // Bewusst EIN Listener auf document statt je Feld: das Panel wird nach jeder
-  // Aenderung neu aufgebaut, und Chrome latcht die laufende Scroll-Geste aufs
-  // alte, entfernte Input -- weitere Ticks gingen dann an die Seite.
-  document.addEventListener('wheel', function (ev) {
-    var el = document.elementFromPoint(ev.clientX, ev.clientY);
-    if (!el || el.tagName !== 'INPUT' || !el.classList.contains('k3d-zahl')) return;
-    if (!el.closest('#k3d-panel-inhalt')) return;
-    ev.preventDefault();
-    // rechne statt parseFloat: auch ein halb getippter Ausdruck wird
-    // aufgeloest statt beim ersten Operator abgeschnitten
-    var v = rechne(el.value);
-    if (v === null) return;
-    // Schrittweite: 1 pro Tick, mit Shift x10, mit Ctrl /10.
-    // Bei gedruecktem Shift melden Browser den Tick oft als deltaX.
-    var delta = ev.deltaY !== 0 ? ev.deltaY : ev.deltaX;
-    if (delta === 0) return;
-    var schritt = ev.shiftKey ? 10 : (ev.ctrlKey || ev.metaKey) ? 0.1 : 1;
-    el.value = Math.round((v + (delta < 0 ? schritt : -schritt)) * 10) / 10;
-    el.dispatchEvent(new Event('change'));
-  }, { passive: false });
-
-  function zeichnePanel() {
-    zustand.liveFelder = null;
-    var inhalt = $('k3d-panel-inhalt');
-    inhalt.innerHTML = '';
+  // Einstellungen des aktiven Werkzeugs -- ein Branch pro Modus. Die
+  // fruehere Variante ersetzte die Objektliste im Panel; jetzt bleibt die
+  // Liste sichtbar und die Tools teilen sich den Bereich darueber.
+  function zeichneToolInhalt(inhalt) {
     if (zustand.schnitt || (zustand.strecken && zustand.strecken.phase === 1)) {
       var istStrecken1 = !zustand.schnitt;
       var e = zustand.viewport.holeSchnittebene();
@@ -2054,6 +1821,244 @@
       inhalt.appendChild(bAnAbbr);
       return;
     }
+    if (!zustand.boxauswahl) return;
+    var titel = document.createElement('p');
+    titel.textContent = 'Auswählen';
+    inhalt.appendChild(titel);
+    [['ersetzen', 'Ersetzen'], ['hinzufuegen', 'Hinzufügen (wie Shift)'], ['entfernen', 'Entfernen']].forEach(function (o) {
+      var label = document.createElement('label');
+      label.className = 'k3d-tool-radio';
+      var radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'k3d-auswahl-verhalten';
+      radio.value = o[0];
+      radio.checked = zustand.boxauswahl.verhalten === o[0];
+      radio.addEventListener('change', function () {
+        zustand.boxauswahl.verhalten = o[0];
+        zustand.viewport.setzeBoxVerhalten(o[0]);
+      });
+      label.appendChild(radio);
+      label.appendChild(document.createTextNode(o[1]));
+      inhalt.appendChild(label);
+    });
+    var bSel = document.createElement('button');
+    bSel.type = 'button';
+    bSel.className = 'btn btn-default' + (zustand.boxauswahl.selektorAktiv ? ' k3d-aktiv' : '');
+    bSel.textContent = zustand.boxauswahl.selektorAktiv ? 'Selektor anklicken …' : 'Objekt als Selektor wählen';
+    bSel.title = 'Der nächste Klick bestimmt das Selektor-Objekt — gewählt wird alles, was sich mit ihm überschneidet (gemäss Verhalten oben)';
+    bSel.addEventListener('click', function () {
+      if (zustand.boxauswahl.selektorAktiv) {
+        zustand.boxauswahl.selektorAktiv = false;
+        zustand.viewport.brichSelektorPickAb();
+        setStatus('Selektor-Wahl abgebrochen.');
+      } else {
+        zustand.boxauswahl.selektorAktiv = true;
+        zustand.viewport.starteSelektorPick();
+        setStatus('Selektor-Objekt im Viewport anklicken — gewählt wird alles, was sich damit überschneidet.');
+      }
+      zeichneToolbereich();
+    });
+    inhalt.appendChild(bSel);
+  }
+
+  function kopieOhneLoch(k) {
+    var kopie = JSON.parse(JSON.stringify(k));
+    kopie.istLoch = false;   // der Selektor-Test schneidet, er zieht nicht ab
+    return kopie;
+  }
+
+  function waehleSelektor(selektorId) {
+    var mz = zustand.boxauswahl;
+    if (!mz) return;
+    mz.selektorAktiv = false;
+    zeichneToolbereich();
+    var selektor = D.findeKnoten(zustand.dok, selektorId);
+    if (!selektor) return;
+    var selektorBox = zustand.viewport.holeWeltBBox(selektorId);
+    var selektorUndicht = D.enthaeltNichtWasserdicht(selektor);
+    setStatus('Überschneidungen mit «' + selektor.name + '» werden geprüft …');
+    var anfragen = zustand.dok.objekte
+      .filter(function (k) { return k.id !== selektorId; })
+      .map(function (k) {
+        // BBox-Vorfilter; unsichtbare Objekte (BBox null) fallen raus
+        var box = zustand.viewport.holeWeltBBox(k.id);
+        if (!window.KlotzwerkAuswahl.bboxUeberlappt(selektorBox, box)) return Promise.resolve(null);
+        // Nicht wasserdicht kann nicht durch die CSG: BBox-Ueberlapp als Naeherung
+        if (selektorUndicht || D.enthaeltNichtWasserdicht(k)) return Promise.resolve(k.id);
+        var probe = {
+          id: 'probe', typ: 'gruppe', modus: 'ueberschneiden', istLoch: false,
+          transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] },
+          kinder: [kopieOhneLoch(selektor), kopieOhneLoch(k)]
+        };
+        return frageMesh(probe).then(function (daten) { return daten ? k.id : null; })
+          .catch(function () { return null; });
+      });
+    Promise.all(anfragen).then(function (ids) {
+      if (zustand.boxauswahl !== mz) return;   // Modus inzwischen beendet
+      var treffer = ids.filter(Boolean);
+      setzeAuswahl(window.KlotzwerkAuswahl.wendeVerhaltenAn(zustand.auswahl, treffer, mz.verhalten));
+      setStatus(treffer.length === 1
+        ? '1 Objekt überschneidet sich mit «' + selektor.name + '».'
+        : treffer.length + ' Objekte überschneiden sich mit «' + selektor.name + '».');
+    });
+  }
+
+  // --- Massstab (zwei Punkte messen, auf Wunschmass skalieren) ------------
+
+  function starteMessenModus() {
+    zustand.viewport.starteMessModus();
+    zustand.messen = { zielId: null, distanz: null };
+    $('btn-messen').classList.add('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+    zeichnePanel();
+    setStatus('Zwei Eckpunkte am selben Objekt anklicken — der Marker springt auf den nächsten Eckpunkt.');
+  }
+
+  function beendeMessenModus() {
+    if (!zustand.messen) return;
+    zustand.messen = null;
+    zustand.viewport.beendeMessModus();
+    $('btn-messen').classList.remove('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+  }
+
+  function brichMessenAb() {
+    if (!zustand.messen) return;
+    beendeMessenModus();
+    zustand.viewport.setzeAuswahl(zustand.auswahl);   // Gizmo zurueck ans Objekt
+    zeichnePanel();
+  }
+
+  function skaliereAufMass(eingabe) {
+    var mz = zustand.messen;
+    if (!mz || mz.distanz === null) return;
+    var wert = rechne(eingabe);
+    var faktor = wert === null ? null : Mess.skalierFaktor(mz.distanz, wert);
+    if (faktor === null) {
+      setStatus('Ungültige Länge — eine Zahl grösser 0 eingeben.', true);
+      return;
+    }
+    var k = D.findeKnoten(zustand.dok, mz.zielId);
+    if (!k) { brichMessenAb(); return; }
+    k.transform = Mess.wendeFaktor(k.transform, faktor);
+    nachAenderung();
+    // zeichneAlles (in nachAenderung) hat das Mesh schon skaliert -- die
+    // Messung zeigt jetzt das Wunschmass, weitermessen bleibt moeglich
+    mz.distanz = zustand.viewport.messungDistanz();
+    zeichnePanel();
+    setStatus('Auf ' + (Math.round(wert * 100) / 100) + ' mm skaliert.');
+  }
+
+  function klickAufZeile(id, e) {
+    var alle = zustand.dok.objekte.map(function (k) { return k.id; });
+    var neu;
+    if (e.shiftKey && zustand.listenAnker && alle.indexOf(zustand.listenAnker) >= 0) {
+      var a = alle.indexOf(zustand.listenAnker), b = alle.indexOf(id);
+      neu = alle.slice(Math.min(a, b), Math.max(a, b) + 1);
+    } else if (e.ctrlKey || e.metaKey) {
+      neu = zustand.auswahl.indexOf(id) >= 0
+        ? zustand.auswahl.filter(function (x) { return x !== id; })
+        : zustand.auswahl.concat([id]);
+      zustand.listenAnker = id;
+    } else {
+      // Klick auf die bereits aktive (aufgeklappte) Zeile klappt sie wieder zu
+      neu = (zustand.auswahl.length === 1 && zustand.auswahl[0] === id) ? [] : [id];
+    }
+    setzeAuswahl(neu);
+  }
+
+  function setzeAuswahl(ids, quelle) {
+    if (zustand.schnitt) brichSchnittAb();
+    if (zustand.strecken) brichStreckenAb();
+    if (zustand.offset) brichOffsetAb();
+    if (zustand.kanal && !(ids.length === 1 && ids[0] === zustand.kanal.zielId)) brichKanalAb();
+    if (zustand.anlegen) brichAnlegenAb();
+    if (zustand.messen) brichMessenAb();
+    zustand.auswahl = ids;
+    if (ids.length === 1) zustand.listenAnker = ids[0];
+    zustand.viewport.setzeAuswahl(ids);
+    zeichnePanel();
+    aktualisiereWerkzeugleiste();
+    if (quelle === 'viewport' && ids.length === 1) {
+      var zeile = document.querySelector('#k3d-panel-inhalt .k3d-zeile[data-id="' + ids[0] + '"]');
+      if (zeile) zeile.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  // Wertet einen einfachen Rechenausdruck aus: + - * /, Klammern, Dezimal-
+  // punkt oder -komma. Rekursiver Abstieg, KEIN eval. Liefert null bei
+  // ungueltiger Eingabe -- der Aufrufer setzt dann den alten Wert zurueck.
+  function rechne(text) {
+    var s = String(text).replace(/,/g, '.').replace(/\s+/g, '');
+    if (!s || /[^0-9.+\-*/()]/.test(s)) return null;
+    var pos = 0;
+    function ausdruck() {
+      var w = term();
+      while (w !== null && (s[pos] === '+' || s[pos] === '-')) {
+        var op = s[pos++];
+        var r = term();
+        if (r === null) return null;
+        w = op === '+' ? w + r : w - r;
+      }
+      return w;
+    }
+    function term() {
+      var w = faktor();
+      while (w !== null && (s[pos] === '*' || s[pos] === '/')) {
+        var op = s[pos++];
+        var r = faktor();
+        if (r === null) return null;
+        w = op === '*' ? w * r : w / r;
+      }
+      return w;
+    }
+    function faktor() {
+      if (s[pos] === '+') { pos++; return faktor(); }
+      if (s[pos] === '-') { pos++; var f = faktor(); return f === null ? null : -f; }
+      if (s[pos] === '(') {
+        pos++;
+        var w = ausdruck();
+        if (w === null || s[pos] !== ')') return null;
+        pos++;
+        return w;
+      }
+      var m = /^\d*\.?\d+/.exec(s.slice(pos));
+      if (!m) return null;
+      pos += m[0].length;
+      return parseFloat(m[0]);
+    }
+    var erg = ausdruck();
+    if (erg === null || pos !== s.length || !isFinite(erg)) return null;
+    return erg;
+  }
+
+  // Scrollrad auf Zahlenfeldern: ein Tick = ±1, die Seite scrollt nicht mit.
+  // Bewusst EIN Listener auf document statt je Feld: das Panel wird nach jeder
+  // Aenderung neu aufgebaut, und Chrome latcht die laufende Scroll-Geste aufs
+  // alte, entfernte Input -- weitere Ticks gingen dann an die Seite.
+  document.addEventListener('wheel', function (ev) {
+    var el = document.elementFromPoint(ev.clientX, ev.clientY);
+    if (!el || el.tagName !== 'INPUT' || !el.classList.contains('k3d-zahl')) return;
+    if (!el.closest('#k3d-panel-inhalt')) return;
+    ev.preventDefault();
+    // rechne statt parseFloat: auch ein halb getippter Ausdruck wird
+    // aufgeloest statt beim ersten Operator abgeschnitten
+    var v = rechne(el.value);
+    if (v === null) return;
+    // Schrittweite: 1 pro Tick, mit Shift x10, mit Ctrl /10.
+    // Bei gedruecktem Shift melden Browser den Tick oft als deltaX.
+    var delta = ev.deltaY !== 0 ? ev.deltaY : ev.deltaX;
+    if (delta === 0) return;
+    var schritt = ev.shiftKey ? 10 : (ev.ctrlKey || ev.metaKey) ? 0.1 : 1;
+    el.value = Math.round((v + (delta < 0 ? schritt : -schritt)) * 10) / 10;
+    el.dispatchEvent(new Event('change'));
+  }, { passive: false });
+
+  function zeichnePanel() {
+    zeichneToolbereich();
+    zustand.liveFelder = null;
+    var inhalt = $('k3d-panel-inhalt');
+    inhalt.innerHTML = '';
     if (zustand.dok.objekte.length === 0) {
       var p = document.createElement('p');
       p.className = 'k3d-panel-leer';
