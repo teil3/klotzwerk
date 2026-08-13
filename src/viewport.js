@@ -113,6 +113,14 @@
         orbit.enabled = !e.value;
         gizmos.forEach(function (andere) { if (andere !== g) andere.enabled = !e.value; });
         if (e.value) {
+          if (g.object === multiProxy && multiAktiv) {
+            multiStart = {
+              proxyPos: multiProxy.position.clone(), proxyQuat: multiProxy.quaternion.clone(),
+              ziele: multiAktiv.map(function (m) {
+                return { mesh: m, pos: m.position.clone(), quat: m.quaternion.clone(), scale: m.scale.clone() };
+              })
+            };
+          }
           if (g.object === pivotProxy && pivotZiel) {
             dragStart = {
               proxyPos: pivotProxy.position.clone(), proxyQuat: pivotProxy.quaternion.clone(),
@@ -124,6 +132,19 @@
               pivotNur: g === gizmoVerschieben && shiftGedrueckt && g.axis === 'XYZ'
             };
           }
+          return;
+        }
+        if (g.object === multiProxy && multiStart) {
+          var liste = multiStart.ziele.map(function (z) {
+            return { id: z.mesh.userData.id, transform: {
+              position: [rund(z.mesh.position.x), rund(z.mesh.position.y), rund(z.mesh.position.z)],
+              rotation: [rund(z.mesh.rotation.x * 180 / Math.PI), rund(z.mesh.rotation.y * 180 / Math.PI), rund(z.mesh.rotation.z * 180 / Math.PI)],
+              skalierung: [rundFein(z.mesh.scale.x), rundFein(z.mesh.scale.y), rundFein(z.mesh.scale.z)]
+            } };
+          });
+          multiStart = null;
+          syncMultiProxy();   // Proxy zurueck auf Identitaet am neuen Zentrum
+          if (callbacks.beiMultiTransformEnde) callbacks.beiMultiTransformEnde(liste);
           return;
         }
         var pivotNur = !!(dragStart && dragStart.pivotNur && g.object === pivotProxy);
@@ -330,6 +351,62 @@
     var pivotZiel = null;    // Mesh, das der Proxy steuert
     var dragStart = null;    // Transform-Schnappschuesse beim Drag-Start
 
+    // --- Multi-Proxy: bei Mehrfachauswahl haengen die Gizmos an einem
+    // Proxy im gemeinsamen BBox-Zentrum und transformieren alle gewaehlten
+    // Objekte zusammen (Drehen/Skalieren um das Zentrum, in Welt-Achsen).
+    // Die Auswahl wirkt damit wie ein fluechtiger Gruppencontainer.
+    var multiProxy = new THREE.Object3D();
+    multiProxy.userData.id = '__multi';
+    szene.add(multiProxy);
+    var multiAktiv = null;   // Meshes der Mehrfachauswahl (Gizmo angehaengt)
+    var multiStart = null;   // Startposen beim Drag-Start
+
+    function syncMultiProxy() {
+      if (!multiAktiv) return;
+      var box = new THREE.Box3();
+      multiAktiv.forEach(function (m) { box.expandByObject(m); });
+      box.getCenter(multiProxy.position);
+      multiProxy.quaternion.set(0, 0, 0, 1);
+      multiProxy.scale.set(1, 1, 1);
+    }
+
+    // Proxy-Delta seit Drag-Start auf ALLE gewaehlten Meshes anwenden.
+    // Skalierung wirkt komponentenweise in Weltachsen; bei gedrehten
+    // Objekten wird die dabei entstehende Scherung (wie beim Aufloesen von
+    // Gruppen) auf die naechstliegende T/R/S-Kombination gerundet.
+    function wendeMultiDeltaAn(g) {
+      if (!multiStart || g.object !== multiProxy) return;
+      var p0 = multiStart.proxyPos;
+      if (g === gizmoVerschieben) {
+        var d = multiProxy.position.clone().sub(p0);
+        multiStart.ziele.forEach(function (z) { z.mesh.position.copy(z.pos).add(d); });
+      } else if (g === gizmoDrehen) {
+        var q = multiProxy.quaternion.clone().multiply(multiStart.proxyQuat.clone().invert());
+        multiStart.ziele.forEach(function (z) {
+          z.mesh.quaternion.copy(q).multiply(z.quat);
+          z.mesh.position.copy(z.pos).sub(p0).applyQuaternion(q).add(p0);
+        });
+      } else {
+        var s = multiProxy.scale;
+        multiStart.ziele.forEach(function (z) {
+          z.mesh.scale.set(z.scale.x * s.x, z.scale.y * s.y, z.scale.z * s.z);
+          z.mesh.position.set(
+            p0.x + (z.pos.x - p0.x) * s.x,
+            p0.y + (z.pos.y - p0.y) * s.y,
+            p0.z + (z.pos.z - p0.z) * s.z);
+        });
+      }
+    }
+
+    function gizmoMultiAttach(meshes) {
+      pivotZiel = null;
+      multiAktiv = meshes;
+      syncMultiProxy();
+      gizmoVerschieben.attach(multiProxy);
+      gizmoDrehen.attach(multiProxy);
+      gizmoSkalieren.attach(multiProxy);
+    }
+
     function pivotLokal(mesh) {
       if (!mesh.userData.pivotLokal) mesh.userData.pivotLokal = new THREE.Vector3();
       return mesh.userData.pivotLokal;
@@ -406,7 +483,7 @@
       });
     }
     gizmos.forEach(function (g) {
-      g.addEventListener('objectChange', function () { wendePivotDeltaAn(g); meldeTransformLive(g); });
+      g.addEventListener('objectChange', function () { wendeMultiDeltaAn(g); wendePivotDeltaAn(g); meldeTransformLive(g); });
     });
 
     // Shift + Doppelklick nahe dem Gizmo-Zentrum: Pivot zurueck in die
@@ -430,6 +507,8 @@
 
     // mitSkalieren=false fuer die Schnittebene: eine Ebene skalieren ist sinnlos
     function gizmoAttach(objekt, mitSkalieren) {
+      multiAktiv = null;
+      multiStart = null;
       if (objekt.userData.id === '__schnittebene') {
         pivotZiel = null;
         gizmoVerschieben.attach(objekt);
@@ -446,10 +525,13 @@
     // objekt optional: ohne Argument alle loesen, sonst nur wenn dort (direkt
     // oder ueber den Pivot-Proxy) angehaengt
     function gizmoDetach(objekt) {
+      var inMulti = !!(objekt && multiAktiv && multiAktiv.indexOf(objekt) >= 0);
       gizmos.forEach(function (g) {
-        if (!objekt || g.object === objekt || (g.object === pivotProxy && pivotZiel === objekt)) g.detach();
+        if (!objekt || g.object === objekt || (g.object === pivotProxy && pivotZiel === objekt) ||
+            (g.object === multiProxy && (!objekt || inMulti))) g.detach();
       });
       if (!objekt || pivotZiel === objekt) pivotZiel = null;
+      if (!objekt || inMulti) { multiAktiv = null; multiStart = null; }
     }
 
     // Fangraster umschalten: Verschieben rastet ueber translationSnap,
@@ -1071,8 +1153,12 @@
       });
       // Gizmo haengt am zuletzt ausgewaehlten Objekt -- ausser im Massstab-
       // oder Auswahl-Modus: dort wuerde es die Mess- bzw. Rahmen-Gesten
-      // abfangen, sobald ein Redraw die Auswahl neu setzt.
-      if (!messen && !boxauswahl && ids.length === 1 && vp.meshes[ids[0]] && vp.meshes[ids[0]].visible) gizmoAttach(vp.meshes[ids[0]], true);
+      // abfangen, sobald ein Redraw die Auswahl neu setzt. Mehrfachauswahl
+      // bekommt den Multi-Proxy (gemeinsam transformieren).
+      var sichtbare = ids.map(function (id) { return vp.meshes[id]; })
+        .filter(function (m) { return m && m.visible; });
+      if (!messen && !boxauswahl && ids.length === 1 && sichtbare.length === 1) gizmoAttach(sichtbare[0], true);
+      else if (!messen && !boxauswahl && sichtbare.length > 1) gizmoMultiAttach(sichtbare);
       else gizmoDetach();
     }
 

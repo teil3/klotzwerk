@@ -337,6 +337,18 @@
         nachAenderung();
         zeichnePanel();
       },
+      // Mehrfachauswahl gemeinsam transformiert: alle Transforms setzen,
+      // EIN Undo-Schritt fuer den ganzen Drag
+      beiMultiTransformEnde: function (liste) {
+        var geaendert = false;
+        liste.forEach(function (e) {
+          var k = D.findeKnoten(zustand.dok, e.id);
+          if (k) { k.transform = e.transform; geaendert = true; }
+        });
+        if (!geaendert) return;
+        nachAenderung();
+        zeichnePanel();
+      },
       // Waehrend des Gizmo-Drags nur die Anzeige nachfuehren -- Dokument,
       // Undo und Autosave laufen erst ueber beiTransformEnde
       beiTransformLive: function (id, transform) {
