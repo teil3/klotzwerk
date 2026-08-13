@@ -58,10 +58,44 @@
     licht2.position.set(80, -120, 200);
     szene.add(licht2);
 
-    // GridHelper liegt in XZ; fuer Z-oben in die XY-Ebene kippen
-    var raster = new THREE.GridHelper(300, 30, 0xbbbbbb, 0xdddddd);
-    raster.rotation.x = Math.PI / 2;
-    szene.add(raster);
+    // Arbeitsflaeche: konfigurierbares Liniengitter in der XY-Ebene (Z=0).
+    // Geometrie kommt aus gitter.js, Einstellungen verwaltet die UI
+    // (localStorage) und reicht sie ueber setzeArbeitsflaeche herein.
+    var raster = null;
+    var gitterKnopf = null;
+    function setzeArbeitsflaeche(e) {
+      if (raster) {
+        szene.remove(raster);
+        raster.children.forEach(function (c) { c.geometry.dispose(); c.material.dispose(); });
+      }
+      var pos = window.KlotzwerkGitter.linienPositionen(e.laenge, e.breite, e.abstand);
+      raster = new THREE.Group();
+      [[pos.linien, e.farbeLinien], [pos.mitte, e.farbeMitte]].forEach(function (paar) {
+        var g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(paar[0]), 3));
+        raster.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: new THREE.Color(paar[1]) })));
+      });
+      raster.visible = e.sichtbar;
+      szene.add(raster);
+      if (gitterKnopf) aktualisiereGitterKnopf(e.sichtbar);
+    }
+    setzeArbeitsflaeche(window.KlotzwerkGitter.normalisiere(null));
+
+    var GITTER_SVG = {
+      an: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">' +
+        '<path d="M2 2 H14 V14 H2 Z M2 6 H14 M2 10 H14 M6 2 V14 M10 2 V14"' +
+        ' fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
+      aus: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">' +
+        '<path d="M2 2 H14 V14 H2 Z M2 6 H14 M2 10 H14 M6 2 V14 M10 2 V14"' +
+        ' fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" opacity="0.35"/>' +
+        '<path d="M2.5 13.5 L13.5 2.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'
+    };
+    function aktualisiereGitterKnopf(sichtbar) {
+      gitterKnopf.innerHTML = sichtbar ? GITTER_SVG.an : GITTER_SVG.aus;
+      gitterKnopf.title = sichtbar
+        ? 'Arbeitsfläche: sichtbar — klicken zum Ausblenden'
+        : 'Arbeitsfläche: ausgeblendet — klicken zum Einblenden';
+    }
 
     // Drei Gizmos gleichzeitig (Tinkercad-Stil): Skalier-Griffe innen (0.75),
     // Ringe in der Mitte (1.0), Verschiebe-Pfeile aussen (1.25). Startet ein
@@ -484,6 +518,18 @@
       heimKnopf.addEventListener('click', heimAnsicht);
       var navOverlay = container.querySelector('.k3d-navwuerfel');
       if (navOverlay) navOverlay.appendChild(heimKnopf);
+      // Gitter-Toggle unterhalb des Heim-Knopfs: blendet die Arbeitsflaeche
+      // ein/aus. Zustand verwaltet die UI (localStorage), darum nur Callback.
+      if (navOverlay) {
+        gitterKnopf = document.createElement('button');
+        gitterKnopf.type = 'button';
+        gitterKnopf.className = 'k3d-gitter-knopf';
+        aktualisiereGitterKnopf(!raster || raster.visible);
+        gitterKnopf.addEventListener('click', function () {
+          if (callbacks.beiGitterToggle) callbacks.beiGitterToggle();
+        });
+        navOverlay.appendChild(gitterKnopf);
+      }
     }
 
     // Weiche Kamerafahrt (~300ms, ease-in-out) auf eine Standard-Ansicht.
@@ -549,6 +595,7 @@
       starteKanalModus: starteKanalModus, beendeKanalModus: beendeKanalModus,
       starteMessModus: starteMessModus, beendeMessModus: beendeMessModus,
       messungDistanz: messungDistanz,
+      setzeArbeitsflaeche: setzeArbeitsflaeche,
       setzeKanalDurchmesser: setzeKanalDurchmesser, setzeKanalForm: setzeKanalForm,
       setzeRaster: setzeRaster, setzeTransparenz: setzeTransparenz,
       leereTransparenz: leereTransparenz, setzeProjektion: setzeProjektion

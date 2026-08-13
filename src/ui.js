@@ -33,6 +33,7 @@
     strecken: null,            // {zielId, phase: 1|2, breite, normal, offset, laeuft} im Strecken-Modus
     anlegen: null,
     messen: null,              // {zielId, distanz} im Massstab-Modus; distanz null bis 2 Punkte gesetzt
+    arbeitsflaeche: null,      // normalisierte Gitter-Einstellungen (localStorage, nicht im Dokument)
     listenAnker: null,         // Id des Anker-Eintrags fuer Shift-Bereichsauswahl in der Liste
     liveFelder: null           // Input-Referenzen des offenen Akkordeons fuer den Gizmo-Live-Sync
   };
@@ -419,10 +420,17 @@
         zustand.messen.zielId = null;
         zustand.messen.distanz = null;
         zeichnePanel();
+      },
+      beiGitterToggle: function () {
+        var e = Object.assign({}, zustand.arbeitsflaeche || ladeArbeitsflaeche());
+        e.sichtbar = !e.sichtbar;
+        setzeArbeitsflaeche(e);
       }
     });
     initRaster();
     initProjektion();
+    initEinstellungen();
+    setzeArbeitsflaeche(ladeArbeitsflaeche());
 
     Array.prototype.forEach.call(document.querySelectorAll('#k3d-palette button[data-typ]'), function (b) {
       b.addEventListener('click', function () {
@@ -606,6 +614,10 @@
     });
 
     document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && einstellungenPanel) {
+        schliesseEinstellungen();
+        return;
+      }
       if (e.key === 'Escape' && zustand.schnitt) {
         brichSchnittAb();
         setStatus('Schneiden abgebrochen.');
@@ -725,6 +737,112 @@
     });
     leisteUnten().appendChild(knopf);
     anwenden();
+  }
+
+  // --- Einstellungen (Zahnrad unten rechts, Popover ueber der Leiste) ------
+  // Nimmt kuenftig weitere Einstellungen auf; aktuell Abschnitt Arbeitsflaeche.
+  // Ansichts-Einstellung wie Raster/Projektion: localStorage, nicht im Dokument.
+
+  var ARBEITSFLAECHE_KEY = 'k3d-arbeitsflaeche';
+  var einstellungenPanel = null;
+
+  function ladeArbeitsflaeche() {
+    var roh = null;
+    try { roh = JSON.parse(localStorage.getItem(ARBEITSFLAECHE_KEY) || 'null'); } catch (e) { }
+    return window.KlotzwerkGitter.normalisiere(roh);
+  }
+
+  function setzeArbeitsflaeche(e) {
+    e = window.KlotzwerkGitter.normalisiere(e);
+    zustand.arbeitsflaeche = e;
+    try { localStorage.setItem(ARBEITSFLAECHE_KEY, JSON.stringify(e)); } catch (ex) { }
+    zustand.viewport.setzeArbeitsflaeche(e);
+  }
+
+  function schliesseEinstellungen() {
+    if (!einstellungenPanel) return;
+    einstellungenPanel.parentNode.removeChild(einstellungenPanel);
+    einstellungenPanel = null;
+  }
+
+  function oeffneEinstellungen() {
+    einstellungenPanel = document.createElement('div');
+    einstellungenPanel.className = 'k3d-einstellungen';
+    var titel = document.createElement('p');
+    titel.textContent = 'Arbeitsfläche';
+    einstellungenPanel.appendChild(titel);
+    function zahlenFeld(beschriftung, schluessel) {
+      var l = document.createElement('label');
+      l.textContent = beschriftung;
+      var i = document.createElement('input');
+      i.type = 'text';             // text statt number: erlaubt Rechenausdruecke
+      i.inputMode = 'decimal';
+      i.className = 'k3d-zahl';
+      i.value = zustand.arbeitsflaeche[schluessel];
+      i.addEventListener('change', function () {
+        var v = rechne(i.value);
+        if (v !== null) {
+          var e = Object.assign({}, zustand.arbeitsflaeche);
+          e[schluessel] = v;
+          setzeArbeitsflaeche(e);
+        }
+        i.value = zustand.arbeitsflaeche[schluessel];   // normalisierten Wert zeigen
+      });
+      l.appendChild(i);
+      einstellungenPanel.appendChild(l);
+    }
+    zahlenFeld('Länge (mm)', 'laenge');
+    zahlenFeld('Breite (mm)', 'breite');
+    zahlenFeld('Rasterabstand (mm)', 'abstand');
+    function farbFeld(beschriftung, schluessel) {
+      var l = document.createElement('label');
+      l.textContent = beschriftung;
+      var i = document.createElement('input');
+      i.type = 'color';
+      i.value = zustand.arbeitsflaeche[schluessel];
+      i.addEventListener('input', function () {   // live beim Ziehen im Farbwaehler
+        var e = Object.assign({}, zustand.arbeitsflaeche);
+        e[schluessel] = i.value;
+        setzeArbeitsflaeche(e);
+      });
+      l.appendChild(i);
+      einstellungenPanel.appendChild(l);
+    }
+    farbFeld('Farbe Linien', 'farbeLinien');
+    farbFeld('Farbe Mittellinien', 'farbeMitte');
+    var bStd = document.createElement('button');
+    bStd.type = 'button';
+    bStd.className = 'btn btn-default';
+    bStd.textContent = 'Standard';
+    bStd.addEventListener('click', function () {
+      setzeArbeitsflaeche({ sichtbar: zustand.arbeitsflaeche.sichtbar });
+      schliesseEinstellungen();
+      oeffneEinstellungen();   // Felder mit den Standard-Werten neu aufbauen
+    });
+    einstellungenPanel.appendChild(bStd);
+    $('k3d-viewport').appendChild(einstellungenPanel);
+  }
+
+  function initEinstellungen() {
+    var knopf = document.createElement('button');
+    knopf.type = 'button';
+    knopf.className = 'k3d-projektion-knopf k3d-einstellungen-knopf';
+    knopf.title = 'Einstellungen';
+    knopf.innerHTML = '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">' +
+      '<circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.4"/>' +
+      '<path d="M8 1.8 V4 M8 12 V14.2 M1.8 8 H4 M12 8 H14.2 M3.6 3.6 L5.2 5.2 M10.8 10.8 L12.4 12.4 M12.4 3.6 L10.8 5.2 M5.2 10.8 L3.6 12.4"' +
+      ' fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+    knopf.addEventListener('click', function () {
+      if (einstellungenPanel) schliesseEinstellungen();
+      else oeffneEinstellungen();
+    });
+    leisteUnten().appendChild(knopf);
+    // Klick ausserhalb schliesst das Popover (Klicks im Panel/aufs Zahnrad nicht)
+    document.addEventListener('pointerdown', function (e) {
+      if (!einstellungenPanel) return;
+      if (e.target.closest && (e.target.closest('.k3d-einstellungen') || e.target.closest('.k3d-einstellungen-knopf'))) return;
+      schliesseEinstellungen();
+    });
   }
 
   // --- Import --------------------------------------------------------------
