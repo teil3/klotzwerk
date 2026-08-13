@@ -32,10 +32,12 @@ Klotzwerk in production, integrated with a print-ordering workflow (the
 ```bash
 git clone https://github.com/teil3/klotzwerk.git
 cd klotzwerk
-python3 -m http.server
+python3 serve.py
 ```
 
 Then open `http://localhost:8000/`.
+
+`serve.py` is a plain `http.server` that adds `Cache-Control: no-store` — without it, Chrome's heuristic caching can keep serving a stale CSG worker (ES modules are not reliably refreshed even by a hard reload).
 
 ## Embedding
 
