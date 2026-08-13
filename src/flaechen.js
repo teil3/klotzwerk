@@ -245,12 +245,41 @@
     };
   }
 
+  // Dreiecks-Auswahl um einen Ring erweitern: alle Dreiecke, die eine
+  // KANTE mit einem ausgewaehlten teilen, kommen dazu (Bereich waechst
+  // damit auch ueber Rundungen, ohne an Ecken diagonal zu springen).
+  // Liefert ein neues, sortiertes Index-Array; die Eingabe bleibt unberuehrt.
+  function erweitereDreiecke(triVerts, indizes) {
+    if (!indizes.length) return [];
+    var drin = {};
+    indizes.forEach(function (i) { drin[i] = true; });
+    // Kanten der ausgewaehlten Dreiecke sammeln (ungerichtet)
+    var kanten = {};
+    indizes.forEach(function (t) {
+      for (var e = 0; e < 3; e++) {
+        var a = triVerts[t * 3 + e], b = triVerts[t * 3 + (e + 1) % 3];
+        kanten[a < b ? a + '_' + b : b + '_' + a] = true;
+      }
+    });
+    var erg = indizes.slice();
+    var n = Math.floor(triVerts.length / 3);
+    for (var t = 0; t < n; t++) {
+      if (drin[t]) continue;
+      for (var e = 0; e < 3; e++) {
+        var a = triVerts[t * 3 + e], b = triVerts[t * 3 + (e + 1) % 3];
+        if (kanten[a < b ? a + '_' + b : b + '_' + a]) { erg.push(t); break; }
+      }
+    }
+    return erg.sort(function (x, y) { return x - y; });
+  }
+
   var api = {
     MAX_DREIECKE: 300000,
     MAX_MERGE_KANDIDATEN: 2000,
     findeFlaechen: findeFlaechen,
     berechneAnlegeTransform: berechneAnlegeTransform,
-    berechnePlattenTransform: berechnePlattenTransform
+    berechnePlattenTransform: berechnePlattenTransform,
+    erweitereDreiecke: erweitereDreiecke
   };
 
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }

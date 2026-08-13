@@ -18,7 +18,7 @@
   // Muss zur KERN_VERSION in esm/csg-worker.js passen. Antwortet ein
   // Worker mit aelterer (oder ohne) Version, kommt er aus dem Browser-Cache
   // und rechnet mit altem Code -- dann laut warnen statt still falsch rechnen.
-  var KERN_VERSION = 2;
+  var KERN_VERSION = 4;
 
   var zustand = {
     dok: null,
@@ -252,6 +252,20 @@
     });
   }
 
+  function frageOffsetBereich(knoten, richtung, wandstaerke, indizes) {
+    var id = zustand.naechsteAnfrage++;
+    return new Promise(function (resolve, reject) {
+      zustand.anfragen[id] = { resolve: resolve, reject: reject };
+      aktualisiereBusy();
+      zustand.worker.postMessage({
+        befehl: 'offsetBereich', anfrageId: id,
+        knoten: JSON.parse(JSON.stringify(knoten)),
+        richtung: richtung, wandstaerke: wandstaerke,
+        indizes: indizes
+      });
+    });
+  }
+
   function frageKanal(knoten, stelle, tiefe, durchmesser) {
     var id = zustand.naechsteAnfrage++;
     return new Promise(function (resolve, reject) {
@@ -447,6 +461,11 @@
         zeichnePanel();
       },
       beiSelektorPick: function (id) { waehleSelektor(id); },
+      beiBereichAenderung: function (anzahl) {
+        if (!zustand.offset) return;
+        zustand.offset.bereichAnzahl = anzahl;
+        zeichneToolbereich();
+      },
       beiGitterToggle: function () {
         var e = Object.assign({}, zustand.arbeitsflaeche || ladeArbeitsflaeche());
         e.sichtbar = !e.sichtbar;
@@ -1379,16 +1398,25 @@
 
   function starteOffsetModus(richtung) {
     if (zustand.offset) beendeOffsetModus();
-    zustand.offset = { richtung: richtung, zielId: zustand.auswahl[0], wandstaerke: 2 };
+    zustand.offset = { richtung: richtung, zielId: zustand.auswahl[0], wandstaerke: 2,
+                       bereichVerfuegbar: false, bereichAnzahl: 0 };
+    // Bereichswahl (nur Aufdicken/Abtragen): Flaechen im Viewport anklickbar,
+    // das Werkzeug wirkt dann nur dort. Aushoehlen bleibt Ganz-Objekt.
+    if (richtung !== 'innen') {
+      var bereichFehler = zustand.viewport.starteBereichsWahl(zustand.offset.zielId);
+      zustand.offset.bereichVerfuegbar = !bereichFehler;
+    }
     $(OFFSET_TEXTE[richtung].knopf).classList.add('k3d-aktiv');
     aktualisiereWerkzeugleiste();
     zeichnePanel();
-    setStatus((richtung === 'abtragen' ? 'Abtrag' : 'Wandstärke') + ' wählen, dann «Ausführen».');
+    setStatus((richtung === 'abtragen' ? 'Abtrag' : 'Wandstärke') + ' wählen, dann «Ausführen»' +
+      (zustand.offset.bereichVerfuegbar ? ' — oder zuerst Flächen anklicken, um nur einen Bereich zu bearbeiten.' : '.'));
   }
 
   function beendeOffsetModus() {
     if (!zustand.offset) return;
     zustand.offset = null;
+    zustand.viewport.beendeBereichsWahl();
     $('btn-aushoehlen').classList.remove('k3d-aktiv');
     $('btn-aufdicken').classList.remove('k3d-aktiv');
     $('btn-abtragen').classList.remove('k3d-aktiv');
@@ -1398,6 +1426,7 @@
   function brichOffsetAb() {
     if (!zustand.offset) return;
     beendeOffsetModus();
+    zustand.viewport.setzeAuswahl(zustand.auswahl);   // Gizmo zurueck ans Objekt
     zeichnePanel();
   }
 
@@ -1453,19 +1482,24 @@
       return;
     }
     var innen = o.richtung === 'innen';
+    var indizes = o.bereichVerfuegbar ? zustand.viewport.holeBereichDreiecke() : [];
     setStatus(texte.laeuft);
-    frageOffset(knoten, o.richtung, w).then(function (t) {
+    var anfrage = indizes.length
+      ? frageOffsetBereich(knoten, o.richtung, w, indizes)
+      : frageOffset(knoten, o.richtung, w);
+    anfrage.then(function (t) {
       if (zustand.offset !== o) return;   // Modus inzwischen beendet oder neu gestartet
       var k = ersetzeDurchErgebnis(knoten, t, knoten.name + texte.suffix);
       beendeOffsetModus();
       setzeAuswahl([k.id]);
       if (innen) starteKanalPhase(k.id, w);
       nachAenderung();
+      var nurBereich = indizes.length ? ' (nur gewählter Bereich)' : '';
       setStatus(innen
         ? 'Ausgehöhlt (Wand ' + w + ' mm). Stelle anklicken, um einen Entleerungskanal zu bohren — oder «Fertig».'
         : o.richtung === 'abtragen'
-          ? 'Abgetragen (' + w + ' mm allseitig entfernt).'
-          : 'Aufgedickt (' + w + ' mm Wand aussen ergänzt).');
+          ? 'Abgetragen (' + w + ' mm entfernt)' + nurBereich + '.'
+          : 'Aufgedickt (' + w + ' mm ergänzt)' + nurBereich + '.');
     }).catch(function (err) {
       if (zustand.offset !== o) return;   // Modus inzwischen beendet oder neu gestartet
       setStatus(texte.titel + ' fehlgeschlagen (' + err.message + ') — dein Modell ist unverändert.', true);
@@ -1709,6 +1743,29 @@
       });
       lw.appendChild(iw);
       inhalt.appendChild(lw);
+      if (o.bereichVerfuegbar) {
+        var hinweisB = document.createElement('p');
+        hinweisB.className = 'k3d-panel-leer';
+        hinweisB.textContent = o.bereichAnzahl
+          ? 'Bereich: ' + o.bereichAnzahl + ' Dreiecke gewählt — nur dieser Bereich wird bearbeitet.'
+          : 'Flächen im Viewport anklicken, um nur einen Bereich zu bearbeiten — sonst wirkt das Werkzeug aufs ganze Objekt.';
+        inhalt.appendChild(hinweisB);
+        var bErw = document.createElement('button');
+        bErw.type = 'button';
+        bErw.className = 'btn btn-default';
+        bErw.textContent = 'Ausweiten';
+        bErw.title = 'Bereich um einen Ring angrenzender Dreiecke vergrössern';
+        bErw.disabled = !o.bereichAnzahl;
+        bErw.addEventListener('click', function () { zustand.viewport.erweitereBereichsWahl(); });
+        inhalt.appendChild(bErw);
+        var bLeer = document.createElement('button');
+        bLeer.type = 'button';
+        bLeer.className = 'btn btn-default';
+        bLeer.textContent = 'Zurücksetzen';
+        bLeer.disabled = !o.bereichAnzahl;
+        bLeer.addEventListener('click', function () { zustand.viewport.leereBereichsWahl(); });
+        inhalt.appendChild(bLeer);
+      }
       var bO = document.createElement('button');
       bO.type = 'button';
       bO.className = 'btn btn-primary';

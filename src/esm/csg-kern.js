@@ -10,7 +10,7 @@
  */
 
 // ?v= wie KERN_VERSION im Worker (Cache-Bust, siehe ui.js)
-import { baueSdf } from './sdf.js?v=2';
+import { baueSdf } from './sdf.js?v=4';
 
 const SEGMENTE = 64;
 const GRAD = Math.PI / 180;
@@ -418,6 +418,135 @@ export function offsetKoerper(M, knoten, richtung, wandstaerke, assets) {
   } finally {
     basis.delete();
     if (versatz) versatz.delete();
+    if (erg) erg.delete();
+  }
+}
+
+// Partielles Aufdicken/Abtragen: nur die uebergebenen Dreiecke (Indizes in
+// der Triangulierung, die auch der 'mesh'-Befehl liefert -- darum
+// knotenZuManifold mit istLoch-Behandlung wie dort) werden als Patch entlang
+// winkelgewichteter Vertex-Normalen extrudiert; der Werkzeugkoerper (Deckel,
+// Boden, Waende ueber die Randkanten) wird vereinigt (aussen) bzw.
+// abgezogen (abtragen). Ein kleiner Epsilon-Ueberstand auf der Gegenseite
+// macht den Boolean numerisch robust.
+export function offsetBereich(M, knoten, indizes, richtung, wandstaerke, assets) {
+  if (!indizes || !indizes.length) throw new Error('Kein Bereich ausgewählt.');
+  // Die Indizes stammen aus der ANZEIGE-Triangulierung (Objektraum, 'mesh'-
+  // Befehl). Das Objektraum-Mesh wird hier selbst nach Welt transformiert --
+  // die Dreiecks-Reihenfolge bleibt dabei garantiert stehen, die Extrusion
+  // rechnet in echten Welt-Millimetern und das Ergebnis kommt wie bei
+  // offsetKoerper in Weltkoordinaten zurueck (ersetzeDurchErgebnis erwartet das).
+  const basisObj = knotenZuManifold(M, knoten, true, assets);
+  if (!basisObj) throw new Error('Das Objekt ist leer.');
+  const meshObj = manifoldZuMesh(basisObj);
+  basisObj.delete();
+  const mat = matAusTransform(knoten.transform);
+  const V = new Float32Array(meshObj.vertProperties.length);
+  for (let i = 0; i < V.length; i += 3) {
+    const x = meshObj.vertProperties[i], y = meshObj.vertProperties[i + 1], z = meshObj.vertProperties[i + 2];
+    V[i] = mat[0] * x + mat[4] * y + mat[8] * z + mat[12];
+    V[i + 1] = mat[1] * x + mat[5] * y + mat[9] * z + mat[13];
+    V[i + 2] = mat[2] * x + mat[6] * y + mat[10] * z + mat[14];
+  }
+  const T = meshObj.triVerts;
+  const basisMesh = new M.Mesh({ numProp: 3, vertProperties: V, triVerts: T });
+  basisMesh.merge();
+  const basis = new M.Manifold(basisMesh);
+  let werkzeug = null, erg = null;
+  try {
+    const nT = (T.length / 3) | 0;
+    for (let k = 0; k < indizes.length; k++) {
+      if (indizes[k] < 0 || indizes[k] >= nT) {
+        throw new Error('Der Bereich passt nicht mehr zum Objekt — wähle die Fläche neu.');
+      }
+    }
+
+    // Winkelgewichtete Vertex-Normalen ueber die Patch-Dreiecke
+    const norm = new Map();   // vertexIndex -> [nx, ny, nz]
+    function eckWinkel(ax, ay, az, bx, by, bz) {
+      const la = Math.hypot(ax, ay, az), lb = Math.hypot(bx, by, bz);
+      if (la < 1e-30 || lb < 1e-30) return 0;
+      let c = (ax * bx + ay * by + az * bz) / (la * lb);
+      c = Math.max(-1, Math.min(1, c));
+      return Math.acos(c);
+    }
+    indizes.forEach(function (t) {
+      const i0 = T[t * 3], i1 = T[t * 3 + 1], i2 = T[t * 3 + 2];
+      const p = [i0, i1, i2].map((i) => [V[i * 3], V[i * 3 + 1], V[i * 3 + 2]]);
+      const ux = p[1][0] - p[0][0], uy = p[1][1] - p[0][1], uz = p[1][2] - p[0][2];
+      const vx = p[2][0] - p[0][0], vy = p[2][1] - p[0][1], vz = p[2][2] - p[0][2];
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const l = Math.hypot(nx, ny, nz);
+      if (l < 1e-30) return;
+      [i0, i1, i2].forEach(function (vi, e) {
+        const a = p[(e + 1) % 3], b = p[(e + 2) % 3], s = p[e];
+        const w = eckWinkel(a[0] - s[0], a[1] - s[1], a[2] - s[2], b[0] - s[0], b[1] - s[1], b[2] - s[2]);
+        const eintrag = norm.get(vi) || [0, 0, 0];
+        eintrag[0] += (nx / l) * w; eintrag[1] += (ny / l) * w; eintrag[2] += (nz / l) * w;
+        norm.set(vi, eintrag);
+      });
+    });
+    norm.forEach(function (n) {
+      const l = Math.hypot(n[0], n[1], n[2]);
+      if (l > 1e-30) { n[0] /= l; n[1] /= l; n[2] /= l; }
+    });
+
+    // Zwei Kopien jedes Patch-Vertex: aussen (Deckel) und innen (Boden)
+    const eps = Math.min(0.2, wandstaerke / 4);
+    const nachAussen = richtung === 'abtragen' ? eps : wandstaerke;
+    const nachInnen = richtung === 'abtragen' ? wandstaerke : eps;
+    const neuIndex = new Map();   // vertexIndex -> Index der Aussen-Kopie (Innen = +1)
+    const wv = [];
+    norm.forEach(function (n, vi) {
+      neuIndex.set(vi, wv.length / 3);
+      wv.push(V[vi * 3] + n[0] * nachAussen, V[vi * 3 + 1] + n[1] * nachAussen, V[vi * 3 + 2] + n[2] * nachAussen);
+      wv.push(V[vi * 3] - n[0] * nachInnen, V[vi * 3 + 1] - n[1] * nachInnen, V[vi * 3 + 2] - n[2] * nachInnen);
+    });
+    // neuIndex haelt den absoluten Index der Aussen-Kopie; Innen liegt direkt dahinter
+    function oben(vi) { return neuIndex.get(vi); }
+    function unten(vi) { return neuIndex.get(vi) + 1; }
+
+    const wt = [];
+    // Gerichtete Kanten des Patches: innere Kanten kommen in beiden
+    // Richtungen vor, Randkanten nur in einer
+    const gerichtet = new Set();
+    indizes.forEach(function (t) {
+      for (let e = 0; e < 3; e++) {
+        gerichtet.add(T[t * 3 + e] + '_' + T[t * 3 + (e + 1) % 3]);
+      }
+    });
+    indizes.forEach(function (t) {
+      const i0 = T[t * 3], i1 = T[t * 3 + 1], i2 = T[t * 3 + 2];
+      wt.push(oben(i0), oben(i1), oben(i2));       // Deckel: Original-Windung
+      wt.push(unten(i0), unten(i2), unten(i1));    // Boden: invertiert
+      for (let e = 0; e < 3; e++) {
+        const a = T[t * 3 + e], b = T[t * 3 + (e + 1) % 3];
+        if (gerichtet.has(b + '_' + a)) continue;  // innere Kante
+        // Wand fuer Randkante a->b, Aussenseite zeigt vom Patch weg
+        wt.push(oben(b), oben(a), unten(a));
+        wt.push(oben(b), unten(a), unten(b));
+      }
+    });
+
+    const wMesh = new M.Mesh({
+      numProp: 3,
+      vertProperties: new Float32Array(wv),
+      triVerts: new Uint32Array(wt)
+    });
+    wMesh.merge();
+    try {
+      werkzeug = new M.Manifold(wMesh);
+    } catch (e) {
+      throw new Error('Der gewählte Bereich lässt sich so nicht verrechnen — erweitere oder verkleinere ihn etwas.');
+    }
+    if (istLeer(werkzeug)) throw new Error('Der gewählte Bereich ist zu klein.');
+    erg = richtung === 'abtragen' ? M.Manifold.difference(basis, werkzeug) : M.Manifold.union(basis, werkzeug);
+    if (istLeer(erg)) throw new Error('Das Ergebnis ist leer — Vorgang abgebrochen.');
+    erg = entferneKruemel(M, erg, Math.min(1, wandstaerke / 2));
+    return manifoldZuMesh(erg);
+  } finally {
+    basis.delete();
+    if (werkzeug) werkzeug.delete();
     if (erg) erg.delete();
   }
 }

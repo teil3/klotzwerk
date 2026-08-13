@@ -677,6 +677,9 @@
       starteKanalModus: starteKanalModus, beendeKanalModus: beendeKanalModus,
       starteMessModus: starteMessModus, beendeMessModus: beendeMessModus,
       messungDistanz: messungDistanz,
+      starteBereichsWahl: starteBereichsWahl, beendeBereichsWahl: beendeBereichsWahl,
+      leereBereichsWahl: leereBereichsWahl, erweitereBereichsWahl: erweitereBereichsWahl,
+      holeBereichDreiecke: holeBereichDreiecke,
       starteBoxModus: starteBoxModus, beendeBoxModus: beendeBoxModus,
       setzeBoxVerhalten: setzeBoxVerhalten,
       starteSelektorPick: starteSelektorPick, brichSelektorPickAb: brichSelektorPickAb,
@@ -843,6 +846,7 @@
       if (kanal) { klickKanal(); return; }
       if (anlegen) { klickAnlegen(); return; }
       if (messen) { klickMessen(); return; }
+      if (bereich) { klickBereich(); return; }
       var r = renderer.domElement.getBoundingClientRect();
       zeigt.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       zeigt.y = -((e.clientY - r.top) / r.height) * 2 + 1;
@@ -1157,8 +1161,8 @@
       // bekommt den Multi-Proxy (gemeinsam transformieren).
       var sichtbare = ids.map(function (id) { return vp.meshes[id]; })
         .filter(function (m) { return m && m.visible; });
-      if (!messen && !boxauswahl && ids.length === 1 && sichtbare.length === 1) gizmoAttach(sichtbare[0], true);
-      else if (!messen && !boxauswahl && sichtbare.length > 1) gizmoMultiAttach(sichtbare);
+      if (!messen && !boxauswahl && !bereich && ids.length === 1 && sichtbare.length === 1) gizmoAttach(sichtbare[0], true);
+      else if (!messen && !boxauswahl && !bereich && sichtbare.length > 1) gizmoMultiAttach(sichtbare);
       else gizmoDetach();
     }
 
@@ -1433,6 +1437,109 @@
         callbacks.beiMessung(messen.punkte[0].id, messungDistanz());
       }
     }
+
+    // --- Bereichswahl (partielles Aufdicken/Abtragen) ----------------------
+    // Flaechen-Klicks sammeln Dreiecks-Indizes des Zielobjekts; «Ausweiten»
+    // waechst per Kanten-Adjazenz auch ueber Rundungen.
+    var bereich = null;   // { zielId, analyse, dreiecke, hoverFlaeche, overlayHover, overlayFest }
+    var FARBE_BEREICH = 0xd9822b;
+
+    function starteBereichsWahl(zielId) {
+      beendeBereichsWahl();
+      var mesh = vp.meshes[zielId];
+      if (!mesh || !mesh.visible) return 'Das Objekt ist noch nicht fertig berechnet.';
+      mesh.updateMatrixWorld();
+      var analyse = window.KlotzwerkFlaechen.findeFlaechen(
+        mesh.geometry.attributes.position.array,
+        mesh.geometry.index.array,
+        mesh.matrixWorld.elements
+      );
+      if (!analyse) return 'Das Objekt hat zu viele Dreiecke für die Flächen-Auswahl.';
+      bereich = { zielId: zielId, analyse: analyse, dreiecke: [],
+                  hoverFlaeche: null, overlayHover: null, overlayFest: null };
+      gizmoDetach();
+      return null;
+    }
+
+    function beendeBereichsWahl() {
+      if (!bereich) return;
+      entferneOverlay(bereich.overlayHover);
+      entferneOverlay(bereich.overlayFest);
+      bereich = null;
+    }
+
+    function baueBereichsOverlay() {
+      entferneOverlay(bereich.overlayFest);
+      bereich.overlayFest = bereich.dreiecke.length
+        ? flaechenOverlay(bereich.zielId, { dreiecke: bereich.dreiecke }, FARBE_BEREICH, 0.55)
+        : null;
+    }
+
+    function meldeBereich() {
+      if (callbacks.beiBereichAenderung) callbacks.beiBereichAenderung(bereich ? bereich.dreiecke.length : 0);
+    }
+
+    function leereBereichsWahl() {
+      if (!bereich) return;
+      bereich.dreiecke = [];
+      baueBereichsOverlay();
+      meldeBereich();
+    }
+
+    function erweitereBereichsWahl() {
+      if (!bereich || !bereich.dreiecke.length) return;
+      var mesh = vp.meshes[bereich.zielId];
+      if (!mesh) return;
+      bereich.dreiecke = window.KlotzwerkFlaechen.erweitereDreiecke(mesh.geometry.index.array, bereich.dreiecke);
+      baueBereichsOverlay();
+      meldeBereich();
+    }
+
+    function holeBereichDreiecke() {
+      return bereich ? bereich.dreiecke.slice() : [];
+    }
+
+    function klickBereich() {
+      if (!bereich.hoverFlaeche) return;   // Klick ins Leere: Modus bleibt
+      var neu = bereich.hoverFlaeche.dreiecke;
+      var drin = {};
+      bereich.dreiecke.forEach(function (i) { drin[i] = true; });
+      var alleDrin = neu.every(function (i) { return drin[i]; });
+      if (alleDrin) {
+        var raus = {};
+        neu.forEach(function (i) { raus[i] = true; });
+        bereich.dreiecke = bereich.dreiecke.filter(function (i) { return !raus[i]; });
+      } else {
+        neu.forEach(function (i) { if (!drin[i]) bereich.dreiecke.push(i); });
+        bereich.dreiecke.sort(function (a, b) { return a - b; });
+      }
+      baueBereichsOverlay();
+      meldeBereich();
+    }
+
+    // Hover in der Bereichswahl: Flaeche unterm Zeiger hervorheben
+    renderer.domElement.addEventListener('pointermove', function (e) {
+      if (!bereich) return;
+      var mesh = vp.meshes[bereich.zielId];
+      if (!mesh) return;
+      var r = renderer.domElement.getBoundingClientRect();
+      zeigt.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+      zeigt.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+      ray.setFromCamera(zeigt, kamera);
+      var treffer = ray.intersectObject(mesh, false);
+      var neuFlaeche = null;
+      if (treffer.length) {
+        var fi = bereich.analyse.dreieckZuFlaeche[treffer[0].faceIndex];
+        if (fi >= 0) neuFlaeche = bereich.analyse.flaechen[fi];
+      }
+      if (neuFlaeche !== bereich.hoverFlaeche) {
+        entferneOverlay(bereich.overlayHover);
+        bereich.hoverFlaeche = neuFlaeche;
+        bereich.overlayHover = neuFlaeche
+          ? flaechenOverlay(bereich.zielId, neuFlaeche, FARBE_BEREICH, 0.3)
+          : null;
+      }
+    });
 
     // --- Auswahl-Modus (Box-Select): 2D-Rahmen aufziehen -------------------
     // Alles, dessen saemtliche Vertices in der Bildschirm-Projektion im
