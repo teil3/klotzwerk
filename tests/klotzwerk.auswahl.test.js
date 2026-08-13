@@ -46,4 +46,34 @@ console.log('vereinige:');
   check('leeres neues Ergebnis', JSON.stringify(A.vereinige(['x'], [])) === JSON.stringify(['x']));
 }
 
+console.log('wendeVerhaltenAn:');
+{
+  check('ersetzen: Treffer werden die Auswahl',
+    JSON.stringify(A.wendeVerhaltenAn(['a', 'b'], ['c'], 'ersetzen')) === JSON.stringify(['c']));
+  check('ersetzen mit leeren Treffern leert die Auswahl',
+    JSON.stringify(A.wendeVerhaltenAn(['a'], [], 'ersetzen')) === JSON.stringify([]));
+  check('hinzufuegen: Vereinigung',
+    JSON.stringify(A.wendeVerhaltenAn(['a'], ['a', 'b'], 'hinzufuegen')) === JSON.stringify(['a', 'b']));
+  check('entfernen: Treffer fliegen aus der Auswahl',
+    JSON.stringify(A.wendeVerhaltenAn(['a', 'b', 'c'], ['b'], 'entfernen')) === JSON.stringify(['a', 'c']));
+  check('entfernen von nicht Gewaehltem aendert nichts',
+    JSON.stringify(A.wendeVerhaltenAn(['a'], ['x'], 'entfernen')) === JSON.stringify(['a']));
+  check('unbekanntes Verhalten faellt auf ersetzen zurueck',
+    JSON.stringify(A.wendeVerhaltenAn(['a'], ['b'], 'quatsch')) === JSON.stringify(['b']));
+}
+
+console.log('bboxUeberlappt:');
+{
+  const a = { min: [0, 0, 0], max: [10, 10, 10] };
+  check('ueberlappend = true',
+    A.bboxUeberlappt(a, { min: [5, 5, 5], max: [15, 15, 15] }) === true);
+  check('getrennt auf X = false',
+    A.bboxUeberlappt(a, { min: [11, 0, 0], max: [20, 10, 10] }) === false);
+  check('Beruehrung an der Kante zaehlt als Ueberlappung',
+    A.bboxUeberlappt(a, { min: [10, 0, 0], max: [20, 10, 10] }) === true);
+  check('getrennt nur auf Z = false',
+    A.bboxUeberlappt(a, { min: [0, 0, 10.1], max: [10, 10, 20] }) === false);
+  check('null-Box = false', A.bboxUeberlappt(a, null) === false);
+}
+
 process.exit(failures ? 1 : 0);

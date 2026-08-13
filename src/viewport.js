@@ -596,6 +596,9 @@
       starteMessModus: starteMessModus, beendeMessModus: beendeMessModus,
       messungDistanz: messungDistanz,
       starteBoxModus: starteBoxModus, beendeBoxModus: beendeBoxModus,
+      setzeBoxVerhalten: setzeBoxVerhalten,
+      starteSelektorPick: starteSelektorPick, brichSelektorPickAb: brichSelektorPickAb,
+      holeWeltBBox: holeWeltBBox,
       setzeArbeitsflaeche: setzeArbeitsflaeche,
       setzeKanalDurchmesser: setzeKanalDurchmesser, setzeKanalForm: setzeKanalForm,
       setzeRaster: setzeRaster, setzeTransparenz: setzeTransparenz,
@@ -767,6 +770,20 @@
         .filter(function (m) { return m.visible; });
       var treffer = ray.intersectObjects(liste, false);
       var neu = treffer.length ? [treffer[0].object.userData.id] : [];
+      if (boxauswahl) {
+        // Auswahl-Modus: erst die Selektor-Pick-Phase bedienen, sonst das
+        // eingestellte Verhalten anwenden (Shift erzwingt Hinzufuegen)
+        if (boxauswahl.selektorPick) {
+          if (neu.length) {
+            boxauswahl.selektorPick = false;
+            if (callbacks.beiSelektorPick) callbacks.beiSelektorPick(neu[0]);
+          }
+          return;
+        }
+        var verhalten = e.shiftKey ? 'hinzufuegen' : boxauswahl.verhalten;
+        callbacks.beiAuswahl(window.KlotzwerkAuswahl.wendeVerhaltenAn(vp.auswahl, neu, verhalten));
+        return;
+      }
       if (e.shiftKey && neu.length) {
         var idx = vp.auswahl.indexOf(neu[0]);
         neu = idx >= 0 ? vp.auswahl.filter(function (id) { return id !== neu[0]; }) : vp.auswahl.concat(neu);
@@ -1335,11 +1352,24 @@
     // Klick-Auswahl (der Klick-Handler prueft die 4px-Drag-Schwelle selbst).
     var boxauswahl = null;   // { ziehStart, shift, gezogen, div }
 
-    function starteBoxModus() {
+    function starteBoxModus(verhalten) {
       beendeBoxModus();
-      boxauswahl = { ziehStart: null, shift: false, gezogen: false, div: null };
+      boxauswahl = { ziehStart: null, shift: false, gezogen: false, div: null,
+                     verhalten: verhalten || 'ersetzen', selektorPick: false };
       gizmoDetach();
       orbit.enabled = false;   // Linksdrag gehoert dem Rahmen
+    }
+
+    function setzeBoxVerhalten(verhalten) {
+      if (boxauswahl) boxauswahl.verhalten = verhalten;
+    }
+
+    function starteSelektorPick() {
+      if (boxauswahl) boxauswahl.selektorPick = true;
+    }
+
+    function brichSelektorPickAb() {
+      if (boxauswahl) boxauswahl.selektorPick = false;
     }
 
     function beendeBoxModus() {
@@ -1347,6 +1377,15 @@
       if (boxauswahl.div && boxauswahl.div.parentNode) boxauswahl.div.parentNode.removeChild(boxauswahl.div);
       orbit.enabled = true;
       boxauswahl = null;
+    }
+
+    // Welt-Bounding-Box eines Meshs fuer den Selektor-Vorfilter
+    function holeWeltBBox(id) {
+      var mesh = vp.meshes[id];
+      if (!mesh || !mesh.visible) return null;
+      mesh.updateMatrixWorld();
+      var box = new THREE.Box3().setFromObject(mesh);
+      return { min: [box.min.x, box.min.y, box.min.z], max: [box.max.x, box.max.y, box.max.z] };
     }
 
     function meshKomplettImRahmen(mesh, rect) {
@@ -1373,11 +1412,13 @@
         var mesh = vp.meshes[id];
         if (mesh.visible && meshKomplettImRahmen(mesh, rect)) treffer.push(id);
       });
-      callbacks.beiAuswahl(shift ? window.KlotzwerkAuswahl.vereinige(vp.auswahl, treffer) : treffer);
+      var verhalten = shift ? 'hinzufuegen' : boxauswahl.verhalten;
+      callbacks.beiAuswahl(window.KlotzwerkAuswahl.wendeVerhaltenAn(vp.auswahl, treffer, verhalten));
     }
 
     renderer.domElement.addEventListener('pointerdown', function (e) {
       if (!boxauswahl || e.button !== 0) return;
+      if (boxauswahl.selektorPick) return;   // Pick-Phase: kein Rahmen, nur Klick
       boxauswahl.ziehStart = [e.clientX, e.clientY];
       boxauswahl.shift = e.shiftKey;
       boxauswahl.gezogen = false;

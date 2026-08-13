@@ -33,7 +33,7 @@
     strecken: null,            // {zielId, phase: 1|2, breite, normal, offset, laeuft} im Strecken-Modus
     anlegen: null,
     messen: null,              // {zielId, distanz} im Massstab-Modus; distanz null bis 2 Punkte gesetzt
-    boxauswahl: null,          // {} im Auswahl-Modus (Rahmen aufziehen)
+    boxauswahl: null,          // {verhalten, selektorAktiv} im Auswahl-Modus (Rahmen aufziehen)
     arbeitsflaeche: null,      // normalisierte Gitter-Einstellungen (localStorage, nicht im Dokument)
     listenAnker: null,         // Id des Anker-Eintrags fuer Shift-Bereichsauswahl in der Liste
     liveFelder: null           // Input-Referenzen des offenen Akkordeons fuer den Gizmo-Live-Sync
@@ -422,6 +422,7 @@
         zustand.messen.distanz = null;
         zeichnePanel();
       },
+      beiSelektorPick: function (id) { waehleSelektor(id); },
       beiGitterToggle: function () {
         var e = Object.assign({}, zustand.arbeitsflaeche || ladeArbeitsflaeche());
         e.sichtbar = !e.sichtbar;
@@ -1493,10 +1494,11 @@
   // aufziehen und direkt gruppieren ist der Zweck des Werkzeugs.
 
   function starteBoxAuswahlModus() {
-    zustand.viewport.starteBoxModus();
-    zustand.boxauswahl = {};
+    zustand.boxauswahl = { verhalten: 'ersetzen', selektorAktiv: false };
+    zustand.viewport.starteBoxModus(zustand.boxauswahl.verhalten);
     $('btn-auswaehlen').classList.add('k3d-aktiv');
     aktualisiereWerkzeugleiste();
+    zeichneToolbereich();
     setStatus('Rahmen aufziehen — alles vollständig darin wird ausgewählt. Shift-Ziehen ergänzt einen weiteren Rahmen.');
   }
 
@@ -1507,6 +1509,100 @@
     $('btn-auswaehlen').classList.remove('k3d-aktiv');
     zustand.viewport.setzeAuswahl(zustand.auswahl);   // Gizmo zurueck ans Objekt
     aktualisiereWerkzeugleiste();
+    zeichneToolbereich();
+  }
+
+  // Tool-Bereich oberhalb der Objektliste: Einstellungen des aktiven
+  // Werkzeugs (aktuell nur Auswaehlen); die Objektliste bleibt sichtbar.
+  function zeichneToolbereich() {
+    var bereich = $('k3d-toolbereich');
+    if (!bereich) return;
+    var inhalt = $('k3d-toolbereich-inhalt');
+    if (!zustand.boxauswahl) {
+      bereich.hidden = true;
+      inhalt.innerHTML = '';
+      return;
+    }
+    bereich.hidden = false;
+    inhalt.innerHTML = '';
+    var titel = document.createElement('p');
+    titel.textContent = 'Auswählen';
+    inhalt.appendChild(titel);
+    [['ersetzen', 'Ersetzen'], ['hinzufuegen', 'Hinzufügen (wie Shift)'], ['entfernen', 'Entfernen']].forEach(function (o) {
+      var label = document.createElement('label');
+      var radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'k3d-auswahl-verhalten';
+      radio.value = o[0];
+      radio.checked = zustand.boxauswahl.verhalten === o[0];
+      radio.addEventListener('change', function () {
+        zustand.boxauswahl.verhalten = o[0];
+        zustand.viewport.setzeBoxVerhalten(o[0]);
+      });
+      label.appendChild(radio);
+      label.appendChild(document.createTextNode(o[1]));
+      inhalt.appendChild(label);
+    });
+    var bSel = document.createElement('button');
+    bSel.type = 'button';
+    bSel.className = 'btn btn-default' + (zustand.boxauswahl.selektorAktiv ? ' k3d-aktiv' : '');
+    bSel.textContent = zustand.boxauswahl.selektorAktiv ? 'Selektor anklicken …' : 'Objekt als Selektor wählen';
+    bSel.title = 'Der nächste Klick bestimmt das Selektor-Objekt — gewählt wird alles, was sich mit ihm überschneidet (gemäss Verhalten oben)';
+    bSel.addEventListener('click', function () {
+      if (zustand.boxauswahl.selektorAktiv) {
+        zustand.boxauswahl.selektorAktiv = false;
+        zustand.viewport.brichSelektorPickAb();
+        setStatus('Selektor-Wahl abgebrochen.');
+      } else {
+        zustand.boxauswahl.selektorAktiv = true;
+        zustand.viewport.starteSelektorPick();
+        setStatus('Selektor-Objekt im Viewport anklicken — gewählt wird alles, was sich damit überschneidet.');
+      }
+      zeichneToolbereich();
+    });
+    inhalt.appendChild(bSel);
+  }
+
+  function kopieOhneLoch(k) {
+    var kopie = JSON.parse(JSON.stringify(k));
+    kopie.istLoch = false;   // der Selektor-Test schneidet, er zieht nicht ab
+    return kopie;
+  }
+
+  function waehleSelektor(selektorId) {
+    var mz = zustand.boxauswahl;
+    if (!mz) return;
+    mz.selektorAktiv = false;
+    zeichneToolbereich();
+    var selektor = D.findeKnoten(zustand.dok, selektorId);
+    if (!selektor) return;
+    var selektorBox = zustand.viewport.holeWeltBBox(selektorId);
+    var selektorUndicht = D.enthaeltNichtWasserdicht(selektor);
+    setStatus('Überschneidungen mit «' + selektor.name + '» werden geprüft …');
+    var anfragen = zustand.dok.objekte
+      .filter(function (k) { return k.id !== selektorId; })
+      .map(function (k) {
+        // BBox-Vorfilter; unsichtbare Objekte (BBox null) fallen raus
+        var box = zustand.viewport.holeWeltBBox(k.id);
+        if (!window.KlotzwerkAuswahl.bboxUeberlappt(selektorBox, box)) return Promise.resolve(null);
+        // Nicht wasserdicht kann nicht durch die CSG: BBox-Ueberlapp als Naeherung
+        if (selektorUndicht || D.enthaeltNichtWasserdicht(k)) return Promise.resolve(k.id);
+        var probe = {
+          id: 'probe', typ: 'gruppe', modus: 'ueberschneiden', istLoch: false,
+          transform: { position: [0, 0, 0], rotation: [0, 0, 0], skalierung: [1, 1, 1] },
+          kinder: [kopieOhneLoch(selektor), kopieOhneLoch(k)]
+        };
+        return frageMesh(probe).then(function (daten) { return daten ? k.id : null; })
+          .catch(function () { return null; });
+      });
+    Promise.all(anfragen).then(function (ids) {
+      if (zustand.boxauswahl !== mz) return;   // Modus inzwischen beendet
+      var treffer = ids.filter(Boolean);
+      setzeAuswahl(window.KlotzwerkAuswahl.wendeVerhaltenAn(zustand.auswahl, treffer, mz.verhalten));
+      setStatus(treffer.length === 1
+        ? '1 Objekt überschneidet sich mit «' + selektor.name + '».'
+        : treffer.length + ' Objekte überschneiden sich mit «' + selektor.name + '».');
+    });
   }
 
   // --- Massstab (zwei Punkte messen, auf Wunschmass skalieren) ------------

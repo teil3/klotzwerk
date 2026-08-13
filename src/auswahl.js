@@ -35,11 +35,33 @@
     return erg;
   }
 
+  // Auswahl-Verhalten des Auswahl-Werkzeugs: 'ersetzen' (Standard),
+  // 'hinzufuegen' (wie Shift) oder 'entfernen' (subtraktiv).
+  function wendeVerhaltenAn(alt, treffer, verhalten) {
+    if (verhalten === 'hinzufuegen') return vereinige(alt, treffer);
+    if (verhalten === 'entfernen') {
+      return alt.filter(function (id) { return treffer.indexOf(id) < 0; });
+    }
+    return treffer.slice();
+  }
+
+  // Achsen-parallele Welt-Bounding-Boxen {min:[x,y,z], max:[x,y,z]};
+  // Beruehrung zaehlt als Ueberlappung.
+  function bboxUeberlappt(a, b) {
+    if (!a || !b) return false;
+    for (var i = 0; i < 3; i++) {
+      if (a.max[i] < b.min[i] || b.max[i] < a.min[i]) return false;
+    }
+    return true;
+  }
+
   var api = {
     normalisiereRechteck: normalisiereRechteck,
     punktImRechteck: punktImRechteck,
     alleImRechteck: alleImRechteck,
-    vereinige: vereinige
+    vereinige: vereinige,
+    wendeVerhaltenAn: wendeVerhaltenAn,
+    bboxUeberlappt: bboxUeberlappt
   };
 
   if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
