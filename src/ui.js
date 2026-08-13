@@ -33,6 +33,7 @@
     strecken: null,            // {zielId, phase: 1|2, breite, normal, offset, laeuft} im Strecken-Modus
     anlegen: null,
     messen: null,              // {zielId, distanz} im Massstab-Modus; distanz null bis 2 Punkte gesetzt
+    boxauswahl: null,          // {} im Auswahl-Modus (Rahmen aufziehen)
     arbeitsflaeche: null,      // normalisierte Gitter-Einstellungen (localStorage, nicht im Dokument)
     listenAnker: null,         // Id des Anker-Eintrags fuer Shift-Bereichsauswahl in der Liste
     liveFelder: null           // Input-Referenzen des offenen Akkordeons fuer den Gizmo-Live-Sync
@@ -604,6 +605,15 @@
       }
     });
 
+    $('btn-auswaehlen').addEventListener('click', function () {
+      if (zustand.boxauswahl) {
+        brichBoxAuswahlAb();
+        setStatus('Auswählen beendet.');
+      } else {
+        starteBoxAuswahlModus();
+      }
+    });
+
     $('btn-messen').addEventListener('click', function () {
       if (zustand.messen) {
         brichMessenAb();
@@ -678,6 +688,11 @@
       if (e.key === 'Escape' && zustand.messen) {
         brichMessenAb();
         setStatus('Massstab beendet.');
+        return;
+      }
+      if (e.key === 'Escape' && zustand.boxauswahl) {
+        brichBoxAuswahlAb();
+        setStatus('Auswählen beendet.');
         return;
       }
       if (e.target.tagName === 'INPUT') return;
@@ -1472,6 +1487,28 @@
     zeichnePanel();
   }
 
+  // --- Auswahl-Modus (Box-Select) -----------------------------------------
+  // Kein modusAktiv im Sinn der Werkzeugleiste: die Aktions-Knoepfe
+  // (Gruppieren, Negativ, Loeschen, ...) bleiben benutzbar -- Rahmen
+  // aufziehen und direkt gruppieren ist der Zweck des Werkzeugs.
+
+  function starteBoxAuswahlModus() {
+    zustand.viewport.starteBoxModus();
+    zustand.boxauswahl = {};
+    $('btn-auswaehlen').classList.add('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+    setStatus('Rahmen aufziehen — alles vollständig darin wird ausgewählt. Shift-Ziehen ergänzt einen weiteren Rahmen.');
+  }
+
+  function brichBoxAuswahlAb() {
+    if (!zustand.boxauswahl) return;
+    zustand.boxauswahl = null;
+    zustand.viewport.beendeBoxModus();
+    $('btn-auswaehlen').classList.remove('k3d-aktiv');
+    zustand.viewport.setzeAuswahl(zustand.auswahl);   // Gizmo zurueck ans Objekt
+    aktualisiereWerkzeugleiste();
+  }
+
   // --- Massstab (zwei Punkte messen, auf Wunschmass skalieren) ------------
 
   function starteMessenModus() {
@@ -2131,15 +2168,19 @@
     var kanalAktiv = !!zustand.kanal;
     var streckenAktiv = !!zustand.strecken;
     var messenAktiv = !!zustand.messen;
+    var boxAktiv = !!zustand.boxauswahl;
     var einzelVersteckt = !!(einzel && einzel.sichtbar === false);
+    // boxAktiv zaehlt bewusst NICHT als modusAktiv: die Aktions-Knoepfe
+    // (Gruppieren, Negativ, Loeschen, ...) bleiben im Auswahl-Modus nutzbar.
     var modusAktiv = schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || messenAktiv;
-    $('btn-schneiden').disabled = !schnittAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || messenAktiv);
-    $('btn-strecken').disabled = !streckenAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || messenAktiv);
-    $('btn-aushoehlen').disabled = !offsetAktiv && !kanalAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || streckenAktiv || messenAktiv);
-    $('btn-aufdicken').disabled = !offsetAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || messenAktiv);
-    $('btn-anlegen').disabled = !anlegenAktiv && (n !== 1 || einzelVersteckt || schnittAktiv || offsetAktiv || kanalAktiv || streckenAktiv || messenAktiv);
-    // Messen braucht keine Auswahl -- nur ein anderer aktiver Modus sperrt
-    $('btn-messen').disabled = !messenAktiv && (schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv);
+    $('btn-schneiden').disabled = !schnittAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || messenAktiv || boxAktiv);
+    $('btn-strecken').disabled = !streckenAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || messenAktiv || boxAktiv);
+    $('btn-aushoehlen').disabled = !offsetAktiv && !kanalAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || streckenAktiv || messenAktiv || boxAktiv);
+    $('btn-aufdicken').disabled = !offsetAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || messenAktiv || boxAktiv);
+    $('btn-anlegen').disabled = !anlegenAktiv && (n !== 1 || einzelVersteckt || schnittAktiv || offsetAktiv || kanalAktiv || streckenAktiv || messenAktiv || boxAktiv);
+    // Messen/Auswaehlen brauchen keine Auswahl -- nur ein anderer aktiver Modus sperrt
+    $('btn-messen').disabled = !messenAktiv && (schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || boxAktiv);
+    $('btn-auswaehlen').disabled = !boxAktiv && (schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || messenAktiv);
     // Bewusst OHNE pauschale nichtWasserdicht-Sperre: nicht-wasserdichte
     // Importe sind der Haupt-Anwendungsfall (Multi-Shell-STLs). Nur Gruppen,
     // die nicht-wasserdichte Kinder ENTHALTEN, bleiben gesperrt -- die

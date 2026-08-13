@@ -595,6 +595,7 @@
       starteKanalModus: starteKanalModus, beendeKanalModus: beendeKanalModus,
       starteMessModus: starteMessModus, beendeMessModus: beendeMessModus,
       messungDistanz: messungDistanz,
+      starteBoxModus: starteBoxModus, beendeBoxModus: beendeBoxModus,
       setzeArbeitsflaeche: setzeArbeitsflaeche,
       setzeKanalDurchmesser: setzeKanalDurchmesser, setzeKanalForm: setzeKanalForm,
       setzeRaster: setzeRaster, setzeTransparenz: setzeTransparenz,
@@ -1049,9 +1050,9 @@
         mesh.material.emissive.setHex(ids.indexOf(id) >= 0 ? EMISSIVE_AUSWAHL : 0x000000);
       });
       // Gizmo haengt am zuletzt ausgewaehlten Objekt -- ausser im Massstab-
-      // Modus: das Redraw nach dem Skalieren wuerde es sonst mitten in der
-      // laufenden Messung wieder anhaengen und die Messklicks abfangen.
-      if (!messen && ids.length === 1 && vp.meshes[ids[0]] && vp.meshes[ids[0]].visible) gizmoAttach(vp.meshes[ids[0]], true);
+      // oder Auswahl-Modus: dort wuerde es die Mess- bzw. Rahmen-Gesten
+      // abfangen, sobald ein Redraw die Auswahl neu setzt.
+      if (!messen && !boxauswahl && ids.length === 1 && vp.meshes[ids[0]] && vp.meshes[ids[0]].visible) gizmoAttach(vp.meshes[ids[0]], true);
       else gizmoDetach();
     }
 
@@ -1326,6 +1327,93 @@
         callbacks.beiMessung(messen.punkte[0].id, messungDistanz());
       }
     }
+
+    // --- Auswahl-Modus (Box-Select): 2D-Rahmen aufziehen -------------------
+    // Alles, dessen saemtliche Vertices in der Bildschirm-Projektion im
+    // Rahmen liegen, wird ausgewaehlt; Shift-Ziehen vereinigt mit der
+    // bestehenden Auswahl. Einfache Klicks laufen weiter ueber die normale
+    // Klick-Auswahl (der Klick-Handler prueft die 4px-Drag-Schwelle selbst).
+    var boxauswahl = null;   // { ziehStart, shift, gezogen, div }
+
+    function starteBoxModus() {
+      beendeBoxModus();
+      boxauswahl = { ziehStart: null, shift: false, gezogen: false, div: null };
+      gizmoDetach();
+      orbit.enabled = false;   // Linksdrag gehoert dem Rahmen
+    }
+
+    function beendeBoxModus() {
+      if (!boxauswahl) return;
+      if (boxauswahl.div && boxauswahl.div.parentNode) boxauswahl.div.parentNode.removeChild(boxauswahl.div);
+      orbit.enabled = true;
+      boxauswahl = null;
+    }
+
+    function meshKomplettImRahmen(mesh, rect) {
+      mesh.updateMatrixWorld();
+      var pos = mesh.geometry.attributes.position.array;
+      if (!pos.length) return false;
+      var v = new THREE.Vector3();
+      for (var i = 0; i < pos.length; i += 3) {
+        v.set(pos[i], pos[i + 1], pos[i + 2]).applyMatrix4(mesh.matrixWorld).project(kamera);
+        if (!window.KlotzwerkAuswahl.punktImRechteck(v.x, v.y, v.z, rect)) return false;
+      }
+      return true;
+    }
+
+    function werteBoxAus(von, bis, shift) {
+      var r = renderer.domElement.getBoundingClientRect();
+      function ndc(cx, cy) {
+        return [((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1];
+      }
+      var a = ndc(von[0], von[1]), b = ndc(bis[0], bis[1]);
+      var rect = window.KlotzwerkAuswahl.normalisiereRechteck(a[0], a[1], b[0], b[1]);
+      var treffer = [];
+      Object.keys(vp.meshes).forEach(function (id) {
+        var mesh = vp.meshes[id];
+        if (mesh.visible && meshKomplettImRahmen(mesh, rect)) treffer.push(id);
+      });
+      callbacks.beiAuswahl(shift ? window.KlotzwerkAuswahl.vereinige(vp.auswahl, treffer) : treffer);
+    }
+
+    renderer.domElement.addEventListener('pointerdown', function (e) {
+      if (!boxauswahl || e.button !== 0) return;
+      boxauswahl.ziehStart = [e.clientX, e.clientY];
+      boxauswahl.shift = e.shiftKey;
+      boxauswahl.gezogen = false;
+      // Capture: der Rahmen folgt der Maus auch ausserhalb des Canvas
+      if (renderer.domElement.setPointerCapture) renderer.domElement.setPointerCapture(e.pointerId);
+    });
+
+    renderer.domElement.addEventListener('pointermove', function (e) {
+      if (!boxauswahl || !boxauswahl.ziehStart) return;
+      if (!boxauswahl.gezogen &&
+          Math.abs(e.clientX - boxauswahl.ziehStart[0]) <= 4 &&
+          Math.abs(e.clientY - boxauswahl.ziehStart[1]) <= 4) return;
+      boxauswahl.gezogen = true;
+      if (!boxauswahl.div) {
+        boxauswahl.div = document.createElement('div');
+        boxauswahl.div.className = 'k3d-box-rahmen';
+        container.appendChild(boxauswahl.div);
+      }
+      var cr = container.getBoundingClientRect();
+      var s = boxauswahl.div.style;
+      s.left = (Math.min(boxauswahl.ziehStart[0], e.clientX) - cr.left) + 'px';
+      s.top = (Math.min(boxauswahl.ziehStart[1], e.clientY) - cr.top) + 'px';
+      s.width = Math.abs(e.clientX - boxauswahl.ziehStart[0]) + 'px';
+      s.height = Math.abs(e.clientY - boxauswahl.ziehStart[1]) + 'px';
+    });
+
+    renderer.domElement.addEventListener('pointerup', function (e) {
+      if (!boxauswahl || !boxauswahl.ziehStart) return;
+      var von = boxauswahl.ziehStart;
+      boxauswahl.ziehStart = null;
+      if (boxauswahl.div && boxauswahl.div.parentNode) boxauswahl.div.parentNode.removeChild(boxauswahl.div);
+      boxauswahl.div = null;
+      if (!boxauswahl.gezogen) return;   // schlichter Klick: normale Klick-Auswahl reagiert
+      boxauswahl.gezogen = false;
+      werteBoxAus(von, [e.clientX, e.clientY], boxauswahl.shift);
+    });
 
     // Hover im Massstab-Modus: Marker snappt auf den naechsten Eckpunkt des
     // getroffenen Dreiecks.

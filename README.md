@@ -10,6 +10,8 @@ Browser-based 3D CAD tool for combining solid primitives into printable models �
 - Grouping/ungrouping, hollowing, face-to-face alignment ("Anlegen")
 - Measure & scale to size ("Massstab"): pick two vertices, read the distance, enter a target length — the object scales proportionally
 - Configurable build plate: size, grid spacing, and colors in a settings popover; visibility toggle below the home button
+- Box select: drag a 2D frame to select everything fully inside it; shift-drag adds another frame
+- Drag & drop import onto the import button
 - Undo/redo
 - Autosave to IndexedDB — nothing is uploaded, the project stays in the browser
 - Import: STL, OBJ, 3MF
@@ -47,6 +49,7 @@ Klotzwerk has no build step. To embed it in another page, copy the script-tag se
 <script src="src/flaechen.js" defer></script>
 <script src="src/schnitt.js" defer></script>
 <script src="src/messen.js" defer></script>
+<script src="src/auswahl.js" defer></script>
 <script src="src/gitter.js" defer></script>
 <script src="src/historie.js" defer></script>
 <script src="src/assets.js" defer></script>
