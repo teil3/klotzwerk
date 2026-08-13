@@ -7,7 +7,7 @@ Browser-based 3D CAD tool for combining solid primitives into printable models â
 - Primitives: box, cylinder, sphere, cone, pyramid, torus, pipe
 - Move, rotate, and scale with a gizmo and snapping grid
 - Boolean operations: union, subtract, intersection, drill holes
-- Grouping/ungrouping, hollowing, face-to-face alignment ("Anlegen")
+- Grouping/ungrouping, hollowing, thickening and its inverse ("Abtragen": shrink by offset), face-to-face alignment ("Anlegen")
 - Measure & scale to size ("Massstab"): pick two vertices, read the distance, enter a target length â€” the object scales proportionally
 - Configurable build plate: size, grid spacing, and colors in a settings popover; visibility toggle below the home button
 - Box select: drag a 2D frame to select everything fully inside it; shift-drag adds another frame

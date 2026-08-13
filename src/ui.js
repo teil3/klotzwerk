@@ -608,6 +608,7 @@
       starteOffsetModus('innen');
     });
     $('btn-aufdicken').addEventListener('click', function () { starteOffsetModus('aussen'); });
+    $('btn-abtragen').addEventListener('click', function () { starteOffsetModus('abtragen'); });
 
     $('btn-anlegen').addEventListener('click', function () {
       if (zustand.anlegen) {
@@ -685,7 +686,7 @@
       if (e.key === 'Escape' && zustand.offset) {
         var offRichtung = zustand.offset.richtung;
         brichOffsetAb();
-        setStatus(offRichtung === 'innen' ? 'Aushöhlen abgebrochen.' : 'Aufdicken abgebrochen.');
+        setStatus(OFFSET_TEXTE[offRichtung].titel + ' abgebrochen.');
         return;
       }
       if (e.key === 'Escape' && zustand.kanal) {
@@ -1357,13 +1358,20 @@
 
   // --- Aushoehlen/Aufdicken (Offset-Modus) --------------------------------
 
+  // Beschriftungen der drei Offset-Richtungen an einem Ort
+  var OFFSET_TEXTE = {
+    innen: { knopf: 'btn-aushoehlen', titel: 'Aushöhlen', feld: 'Wandstärke (mm)', laeuft: 'Wird ausgehöhlt …', suffix: ' ausgehöhlt' },
+    aussen: { knopf: 'btn-aufdicken', titel: 'Aufdicken', feld: 'Wandstärke (mm)', laeuft: 'Wird aufgedickt …', suffix: ' aufgedickt' },
+    abtragen: { knopf: 'btn-abtragen', titel: 'Abtragen', feld: 'Abtrag (mm)', laeuft: 'Wird abgetragen …', suffix: ' abgetragen' }
+  };
+
   function starteOffsetModus(richtung) {
     if (zustand.offset) beendeOffsetModus();
     zustand.offset = { richtung: richtung, zielId: zustand.auswahl[0], wandstaerke: 2 };
-    $(richtung === 'innen' ? 'btn-aushoehlen' : 'btn-aufdicken').classList.add('k3d-aktiv');
+    $(OFFSET_TEXTE[richtung].knopf).classList.add('k3d-aktiv');
     aktualisiereWerkzeugleiste();
     zeichnePanel();
-    setStatus('Wandstärke wählen, dann «Ausführen».');
+    setStatus((richtung === 'abtragen' ? 'Abtrag' : 'Wandstärke') + ' wählen, dann «Ausführen».');
   }
 
   function beendeOffsetModus() {
@@ -1371,6 +1379,7 @@
     zustand.offset = null;
     $('btn-aushoehlen').classList.remove('k3d-aktiv');
     $('btn-aufdicken').classList.remove('k3d-aktiv');
+    $('btn-abtragen').classList.remove('k3d-aktiv');
     aktualisiereWerkzeugleiste();
   }
 
@@ -1426,22 +1435,28 @@
     var knoten = D.findeKnoten(zustand.dok, o.zielId);
     if (!knoten) { brichOffsetAb(); return; }
     var w = o.wandstaerke;
-    if (!isFinite(w) || w < 0.2) { setStatus('Wandstärke muss mindestens 0.2 mm sein.', true); return; }
+    var texte = OFFSET_TEXTE[o.richtung];
+    if (!isFinite(w) || w < 0.2) {
+      setStatus((o.richtung === 'abtragen' ? 'Abtrag' : 'Wandstärke') + ' muss mindestens 0.2 mm sein.', true);
+      return;
+    }
     var innen = o.richtung === 'innen';
-    setStatus(innen ? 'Wird ausgehöhlt …' : 'Wird aufgedickt …');
+    setStatus(texte.laeuft);
     frageOffset(knoten, o.richtung, w).then(function (t) {
       if (zustand.offset !== o) return;   // Modus inzwischen beendet oder neu gestartet
-      var k = ersetzeDurchErgebnis(knoten, t, knoten.name + (innen ? ' ausgehöhlt' : ' aufgedickt'));
+      var k = ersetzeDurchErgebnis(knoten, t, knoten.name + texte.suffix);
       beendeOffsetModus();
       setzeAuswahl([k.id]);
       if (innen) starteKanalPhase(k.id, w);
       nachAenderung();
       setStatus(innen
         ? 'Ausgehöhlt (Wand ' + w + ' mm). Stelle anklicken, um einen Entleerungskanal zu bohren — oder «Fertig».'
-        : 'Aufgedickt (' + w + ' mm Wand aussen ergänzt).');
+        : o.richtung === 'abtragen'
+          ? 'Abgetragen (' + w + ' mm allseitig entfernt).'
+          : 'Aufgedickt (' + w + ' mm Wand aussen ergänzt).');
     }).catch(function (err) {
       if (zustand.offset !== o) return;   // Modus inzwischen beendet oder neu gestartet
-      setStatus((innen ? 'Aushöhlen' : 'Aufdicken') + ' fehlgeschlagen (' + err.message + ') — dein Modell ist unverändert.', true);
+      setStatus(texte.titel + ' fehlgeschlagen (' + err.message + ') — dein Modell ist unverändert.', true);
     });
   }
 
@@ -1665,10 +1680,10 @@
     if (zustand.offset) {
       var o = zustand.offset;
       var titelO = document.createElement('p');
-      titelO.textContent = o.richtung === 'innen' ? 'Aushöhlen' : 'Aufdicken';
+      titelO.textContent = OFFSET_TEXTE[o.richtung].titel;
       inhalt.appendChild(titelO);
       var lw = document.createElement('label');
-      lw.textContent = 'Wandstärke (mm)';
+      lw.textContent = OFFSET_TEXTE[o.richtung].feld;
       var iw = document.createElement('input');
       iw.type = 'text';            // text statt number: erlaubt Rechenausdruecke
       iw.inputMode = 'decimal';
@@ -1694,7 +1709,7 @@
       bOA.textContent = 'Abbrechen';
       bOA.addEventListener('click', function () {
         brichOffsetAb();
-        setStatus(o.richtung === 'innen' ? 'Aushöhlen abgebrochen.' : 'Aufdicken abgebrochen.');
+        setStatus(OFFSET_TEXTE[o.richtung].titel + ' abgebrochen.');
       });
       inhalt.appendChild(bOA);
       return;
@@ -2290,6 +2305,7 @@
     $('btn-strecken').disabled = !streckenAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || messenAktiv || boxAktiv);
     $('btn-aushoehlen').disabled = !offsetAktiv && !kanalAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || streckenAktiv || messenAktiv || boxAktiv);
     $('btn-aufdicken').disabled = !offsetAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || messenAktiv || boxAktiv);
+    $('btn-abtragen').disabled = $('btn-aufdicken').disabled;
     $('btn-anlegen').disabled = !anlegenAktiv && (n !== 1 || einzelVersteckt || schnittAktiv || offsetAktiv || kanalAktiv || streckenAktiv || messenAktiv || boxAktiv);
     // Messen/Auswaehlen brauchen keine Auswahl -- nur ein anderer aktiver Modus sperrt
     $('btn-messen').disabled = !messenAktiv && (schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || boxAktiv);

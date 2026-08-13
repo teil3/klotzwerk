@@ -68,6 +68,18 @@ function knoten(typ, params) {
     check('Platte deutlich dicker', ist > 2000, 'ist ' + ist.toFixed(0));
   }
 
+  console.log('Abtragen (Gegenteil von Aufdicken):');
+  {
+    const klein = kern.offsetKoerper(M, knoten('quader', { breite: 20, tiefe: 20, hoehe: 20 }), 'abtragen', 2);
+    const ist = meshVolumen(klein);
+    check('Wuerfel 20 um 2 abgetragen = 16er-Wuerfel', etwaProzent(ist, 4096, 0.08), ist.toFixed(0) + ' soll ~4096');
+
+    const kugel = kern.offsetKoerper(M, knoten('kugel', { durchmesser: 20 }), 'abtragen', 3);
+    const sollKugel = (4 / 3) * Math.PI * 343;   // r7
+    const istKugel = meshVolumen(kugel);
+    check('Kugel Ø20 um 3 abgetragen = Ø14', etwaProzent(istKugel, sollKugel, 0.08), istKugel.toFixed(0) + ' soll ~' + sollKugel.toFixed(0));
+  }
+
   console.log('Kruemel-Filter (entferneKruemel):');
   {
     // Grosser Wuerfel + Marching-Cubes-grosser Splitter + legitimes kleines
@@ -108,6 +120,9 @@ function knoten(typ, params) {
   erwarteFehler('Wand bei Modellgroesse nicht aufloesbar',
     () => kern.offsetKoerper(M, knoten('quader', { breite: 500, tiefe: 500, hoehe: 500 }), 'innen', 1),
     'nicht auflösbar');
+  erwarteFehler('zu viel Abtrag laesst nichts uebrig',
+    () => kern.offsetKoerper(M, knoten('quader', { breite: 20, tiefe: 20, hoehe: 20 }), 'abtragen', 12),
+    'nichts übrig');
 
   console.log(failures === 0 ? 'Alle Offset-Tests ok.' : failures + ' Test(s) fehlgeschlagen.');
   process.exit(failures === 0 ? 0 : 1);

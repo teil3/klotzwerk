@@ -393,13 +393,21 @@ export function offsetKoerper(M, knoten, richtung, wandstaerke, assets) {
     };
     // sdf ist positiv innen; levelSet baut die Flaeche sdf == level, der
     // Koerper ist die Region sdf > level. Also: +w schrumpft, -w waechst.
-    const level = richtung === 'innen' ? wandstaerke : -wandstaerke;
+    // 'innen' hoehlt aus (Basis minus Schrumpfkoerper), 'aussen' dickt auf
+    // (Basis plus Wachstumskoerper), 'abtragen' IST der Schrumpfkoerper.
+    const level = richtung === 'aussen' ? -wandstaerke : wandstaerke;
     versatz = M.Manifold.levelSet(sdf, bounds, edgeLength, level);
     if (richtung === 'innen') {
       if (istLeer(versatz)) {
         throw new Error('Das Objekt ist zu klein zum Aushöhlen mit ' + wandstaerke + ' mm Wand.');
       }
       erg = M.Manifold.difference(basis, versatz);
+    } else if (richtung === 'abtragen') {
+      if (istLeer(versatz)) {
+        throw new Error('Bei ' + wandstaerke + ' mm Abtrag bleibt vom Objekt nichts übrig — wähle weniger Abtrag.');
+      }
+      // Schnitt mit der Basis statt Alias: eigenes Objekt fuers finally
+      erg = M.Manifold.intersection(versatz, basis);
     } else {
       erg = M.Manifold.union(versatz, basis);
     }
