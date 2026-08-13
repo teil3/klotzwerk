@@ -10,7 +10,8 @@
   // lauffaehig (Demo-Root, teil3-Einbettung, fremde Websites).
   var SCRIPT_BASIS = new URL('.', document.currentScript.src); // .../src/
 
-  var D = window.KlotzwerkDokument, H = window.KlotzwerkHistorie, IO = window.KlotzwerkIO;
+  var D = window.KlotzwerkDokument, H = window.KlotzwerkHistorie, IO = window.KlotzwerkIO,
+      Mess = window.KlotzwerkMessen;
 
   var KANAL_DURCHMESSER = 3;   // Standard-Lochdurchmesser des Entleerungskanals in mm
 
@@ -31,6 +32,7 @@
     kanal: null,               // {zielId, wandstaerke, laeuft} in der Entleerungskanal-Phase
     strecken: null,            // {zielId, phase: 1|2, breite, normal, offset, laeuft} im Strecken-Modus
     anlegen: null,
+    messen: null,              // {zielId, distanz} im Massstab-Modus; distanz null bis 2 Punkte gesetzt
     listenAnker: null,         // Id des Anker-Eintrags fuer Shift-Bereichsauswahl in der Liste
     liveFelder: null           // Input-Referenzen des offenen Akkordeons fuer den Gizmo-Live-Sync
   };
@@ -403,7 +405,21 @@
         beendeAnlegenModus();
         setStatus('Angelegt.');
       },
-      beiAnlegenMeldung: function (text) { setStatus(text, true); }
+      beiAnlegenMeldung: function (text) { setStatus(text, true); },
+      beiMessung: function (id, distanz) {
+        if (!zustand.messen) return;
+        zustand.messen.zielId = id;
+        zustand.messen.distanz = distanz;
+        zeichnePanel();
+        setStatus('Neue Länge eingeben — oder zwei neue Punkte anklicken.');
+      },
+      beiMessenMeldung: function (text) { if (zustand.messen) setStatus(text, true); },
+      beiMessenReset: function () {
+        if (!zustand.messen) return;
+        zustand.messen.zielId = null;
+        zustand.messen.distanz = null;
+        zeichnePanel();
+      }
     });
     initRaster();
     initProjektion();
@@ -549,6 +565,15 @@
       }
     });
 
+    $('btn-messen').addEventListener('click', function () {
+      if (zustand.messen) {
+        brichMessenAb();
+        setStatus('Massstab beendet.');
+      } else {
+        starteMessenModus();
+      }
+    });
+
     $('btn-auftrennen').addEventListener('click', function () {
       var knoten = D.findeKnoten(zustand.dok, zustand.auswahl[0]);
       if (!knoten) return;
@@ -605,6 +630,11 @@
       if (e.key === 'Escape' && zustand.anlegen) {
         brichAnlegenAb();
         setStatus('Anlegen abgebrochen.');
+        return;
+      }
+      if (e.key === 'Escape' && zustand.messen) {
+        brichMessenAb();
+        setStatus('Massstab beendet.');
         return;
       }
       if (e.target.tagName === 'INPUT') return;
@@ -1293,6 +1323,52 @@
     zeichnePanel();
   }
 
+  // --- Massstab (zwei Punkte messen, auf Wunschmass skalieren) ------------
+
+  function starteMessenModus() {
+    zustand.viewport.starteMessModus();
+    zustand.messen = { zielId: null, distanz: null };
+    $('btn-messen').classList.add('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+    zeichnePanel();
+    setStatus('Zwei Eckpunkte am selben Objekt anklicken — der Marker springt auf den nächsten Eckpunkt.');
+  }
+
+  function beendeMessenModus() {
+    if (!zustand.messen) return;
+    zustand.messen = null;
+    zustand.viewport.beendeMessModus();
+    $('btn-messen').classList.remove('k3d-aktiv');
+    aktualisiereWerkzeugleiste();
+  }
+
+  function brichMessenAb() {
+    if (!zustand.messen) return;
+    beendeMessenModus();
+    zustand.viewport.setzeAuswahl(zustand.auswahl);   // Gizmo zurueck ans Objekt
+    zeichnePanel();
+  }
+
+  function skaliereAufMass(eingabe) {
+    var mz = zustand.messen;
+    if (!mz || mz.distanz === null) return;
+    var wert = rechne(eingabe);
+    var faktor = wert === null ? null : Mess.skalierFaktor(mz.distanz, wert);
+    if (faktor === null) {
+      setStatus('Ungültige Länge — eine Zahl grösser 0 eingeben.', true);
+      return;
+    }
+    var k = D.findeKnoten(zustand.dok, mz.zielId);
+    if (!k) { brichMessenAb(); return; }
+    k.transform = Mess.wendeFaktor(k.transform, faktor);
+    nachAenderung();
+    // zeichneAlles (in nachAenderung) hat das Mesh schon skaliert -- die
+    // Messung zeigt jetzt das Wunschmass, weitermessen bleibt moeglich
+    mz.distanz = zustand.viewport.messungDistanz();
+    zeichnePanel();
+    setStatus('Auf ' + (Math.round(wert * 100) / 100) + ' mm skaliert.');
+  }
+
   function klickAufZeile(id, e) {
     var alle = zustand.dok.objekte.map(function (k) { return k.id; });
     var neu;
@@ -1317,6 +1393,7 @@
     if (zustand.offset) brichOffsetAb();
     if (zustand.kanal && !(ids.length === 1 && ids[0] === zustand.kanal.zielId)) brichKanalAb();
     if (zustand.anlegen) brichAnlegenAb();
+    if (zustand.messen) brichMessenAb();
     zustand.auswahl = ids;
     if (ids.length === 1) zustand.listenAnker = ids[0];
     zustand.viewport.setzeAuswahl(ids);
@@ -1559,6 +1636,49 @@
         setStatus(o.richtung === 'innen' ? 'Aushöhlen abgebrochen.' : 'Aufdicken abgebrochen.');
       });
       inhalt.appendChild(bOA);
+      return;
+    }
+    if (zustand.messen) {
+      var titelM = document.createElement('p');
+      titelM.textContent = 'Massstab';
+      inhalt.appendChild(titelM);
+      if (zustand.messen.distanz === null) {
+        var hinweisM = document.createElement('p');
+        hinweisM.className = 'k3d-panel-leer';
+        hinweisM.textContent = 'Zwei Eckpunkte am selben Objekt anklicken. Danach kannst du die gemessene Länge auf ein Wunschmass skalieren.';
+        inhalt.appendChild(hinweisM);
+      } else {
+        var gemessen = document.createElement('p');
+        gemessen.textContent = 'Gemessen: ' + (Math.round(zustand.messen.distanz * 100) / 100) + ' mm';
+        inhalt.appendChild(gemessen);
+        var lm = document.createElement('label');
+        lm.textContent = 'Neue Länge (mm)';
+        var im = document.createElement('input');
+        im.type = 'text';            // text statt number: erlaubt Rechenausdruecke
+        im.inputMode = 'decimal';
+        im.className = 'k3d-zahl';
+        im.id = 'k3d-mess-neu';
+        im.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter') skaliereAufMass(im.value);
+        });
+        lm.appendChild(im);
+        inhalt.appendChild(lm);
+        var bM = document.createElement('button');
+        bM.type = 'button';
+        bM.className = 'btn btn-primary';
+        bM.textContent = 'Skalieren';
+        bM.addEventListener('click', function () { skaliereAufMass(im.value); });
+        inhalt.appendChild(bM);
+      }
+      var bMF = document.createElement('button');
+      bMF.type = 'button';
+      bMF.className = 'btn btn-default';
+      bMF.textContent = 'Fertig';
+      bMF.addEventListener('click', function () {
+        brichMessenAb();
+        setStatus('Massstab beendet.');
+      });
+      inhalt.appendChild(bMF);
       return;
     }
     if (zustand.kanal) {
@@ -1857,13 +1977,16 @@
     var anlegenAktiv = !!zustand.anlegen;
     var kanalAktiv = !!zustand.kanal;
     var streckenAktiv = !!zustand.strecken;
+    var messenAktiv = !!zustand.messen;
     var einzelVersteckt = !!(einzel && einzel.sichtbar === false);
-    var modusAktiv = schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv;
-    $('btn-schneiden').disabled = !schnittAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv);
-    $('btn-strecken').disabled = !streckenAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv);
-    $('btn-aushoehlen').disabled = !offsetAktiv && !kanalAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || streckenAktiv);
-    $('btn-aufdicken').disabled = !offsetAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || kanalAktiv || streckenAktiv);
-    $('btn-anlegen').disabled = !anlegenAktiv && (n !== 1 || einzelVersteckt || schnittAktiv || offsetAktiv || kanalAktiv || streckenAktiv);
+    var modusAktiv = schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || messenAktiv;
+    $('btn-schneiden').disabled = !schnittAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || messenAktiv);
+    $('btn-strecken').disabled = !streckenAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || messenAktiv);
+    $('btn-aushoehlen').disabled = !offsetAktiv && !kanalAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || streckenAktiv || messenAktiv);
+    $('btn-aufdicken').disabled = !offsetAktiv && (n !== 1 || nichtWasserdicht || !zustand.engineBereit || schnittAktiv || anlegenAktiv || kanalAktiv || streckenAktiv || messenAktiv);
+    $('btn-anlegen').disabled = !anlegenAktiv && (n !== 1 || einzelVersteckt || schnittAktiv || offsetAktiv || kanalAktiv || streckenAktiv || messenAktiv);
+    // Messen braucht keine Auswahl -- nur ein anderer aktiver Modus sperrt
+    $('btn-messen').disabled = !messenAktiv && (schnittAktiv || offsetAktiv || anlegenAktiv || kanalAktiv || streckenAktiv);
     // Bewusst OHNE pauschale nichtWasserdicht-Sperre: nicht-wasserdichte
     // Importe sind der Haupt-Anwendungsfall (Multi-Shell-STLs). Nur Gruppen,
     // die nicht-wasserdichte Kinder ENTHALTEN, bleiben gesperrt -- die

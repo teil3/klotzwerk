@@ -547,6 +547,8 @@
       beendeStreckVorschau: beendeStreckVorschau,
       starteAnlegeModus: starteAnlegeModus, beendeAnlegeModus: beendeAnlegeModus,
       starteKanalModus: starteKanalModus, beendeKanalModus: beendeKanalModus,
+      starteMessModus: starteMessModus, beendeMessModus: beendeMessModus,
+      messungDistanz: messungDistanz,
       setzeKanalDurchmesser: setzeKanalDurchmesser, setzeKanalForm: setzeKanalForm,
       setzeRaster: setzeRaster, setzeTransparenz: setzeTransparenz,
       leereTransparenz: leereTransparenz, setzeProjektion: setzeProjektion
@@ -705,6 +707,7 @@
       if (gizmos.some(function (g) { return g.dragging; })) return;
       if (kanal) { klickKanal(); return; }
       if (anlegen) { klickAnlegen(); return; }
+      if (messen) { klickMessen(); return; }
       var r = renderer.domElement.getBoundingClientRect();
       zeigt.x = ((e.clientX - r.left) / r.width) * 2 - 1;
       zeigt.y = -((e.clientY - r.top) / r.height) * 2 + 1;
@@ -998,8 +1001,10 @@
         var mesh = vp.meshes[id];
         mesh.material.emissive.setHex(ids.indexOf(id) >= 0 ? EMISSIVE_AUSWAHL : 0x000000);
       });
-      // Gizmo haengt am zuletzt ausgewaehlten Objekt
-      if (ids.length === 1 && vp.meshes[ids[0]] && vp.meshes[ids[0]].visible) gizmoAttach(vp.meshes[ids[0]], true);
+      // Gizmo haengt am zuletzt ausgewaehlten Objekt -- ausser im Massstab-
+      // Modus: das Redraw nach dem Skalieren wuerde es sonst mitten in der
+      // laufenden Messung wieder anhaengen und die Messklicks abfangen.
+      if (!messen && ids.length === 1 && vp.meshes[ids[0]] && vp.meshes[ids[0]].visible) gizmoAttach(vp.meshes[ids[0]], true);
       else gizmoDetach();
     }
 
@@ -1158,6 +1163,144 @@
       if (callbacks.beiAnlegenEnde) callbacks.beiAnlegenEnde();
       callbacks.beiTransformEnde(id, neu);
     }
+
+    // --- Massstab-Modus: zwei Vertex-Punkte messen -------------------------
+    // Punkte werden in LOKAL-Koordinaten des Meshs gemerkt: nach dem
+    // Skalieren wandern Marker, Linie und Distanz automatisch mit, weil die
+    // Anzeige jeden Frame aus mesh.matrixWorld neu gerechnet wird.
+    var messen = null;   // { punkte: [{id, lokal}], hover, markerHover, marker: [2], linie }
+    var FARBE_MESSEN = 0xd9531e;
+
+    function messMarker(farbe) {
+      var m = new THREE.Mesh(
+        new THREE.SphereBufferGeometry(1, 12, 8),
+        new THREE.MeshBasicMaterial({ color: farbe, depthTest: false, transparent: true })
+      );
+      m.renderOrder = 10;
+      m.visible = false;
+      szene.add(m);
+      return m;
+    }
+
+    function starteMessModus() {
+      beendeMessModus();
+      var lg = new THREE.BufferGeometry();
+      lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+      var linie = new THREE.Line(lg, new THREE.LineBasicMaterial({
+        color: FARBE_MESSEN, depthTest: false, transparent: true
+      }));
+      linie.renderOrder = 9;
+      linie.visible = false;
+      szene.add(linie);
+      messen = {
+        punkte: [], hover: null,
+        markerHover: messMarker(FARBE_MESSEN),
+        marker: [messMarker(FARBE_MESSEN), messMarker(FARBE_MESSEN)],
+        linie: linie
+      };
+      messen.markerHover.material.opacity = 0.5;
+      gizmoDetach();
+    }
+
+    function beendeMessModus() {
+      if (!messen) return;
+      [messen.markerHover, messen.marker[0], messen.marker[1], messen.linie].forEach(function (o) {
+        szene.remove(o);
+        o.geometry.dispose();
+        o.material.dispose();
+      });
+      messen = null;
+    }
+
+    function messWeltPunkt(p) {
+      var mesh = vp.meshes[p.id];
+      if (!mesh || !mesh.visible) return null;
+      mesh.updateMatrixWorld();
+      return new THREE.Vector3(p.lokal[0], p.lokal[1], p.lokal[2]).applyMatrix4(mesh.matrixWorld);
+    }
+
+    function messungDistanz() {
+      if (!messen || messen.punkte.length < 2) return null;
+      var a = messWeltPunkt(messen.punkte[0]), b = messWeltPunkt(messen.punkte[1]);
+      return (a && b) ? a.distanceTo(b) : null;
+    }
+
+    // Marker in konstanter Bildschirmgroesse halten und Welt-Positionen jeden
+    // Frame aus den Lokal-Punkten neu ableiten (Objekt kann skaliert werden).
+    function aktualisiereMessAnzeige() {
+      function setzeMarker(marker, p) {
+        var w = p ? messWeltPunkt(p) : null;
+        marker.visible = !!w;
+        if (!w) return null;
+        marker.position.copy(w);
+        var sicht = kamera.isOrthographicCamera
+          ? orthoHoehe / kamera.zoom
+          : w.distanceTo(kamera.position) * 2 * FOV_HALB_TAN;
+        marker.scale.setScalar(sicht * 0.008);
+        return w;
+      }
+      // Verschwindet das Mesh eines fixierten Punkts (Undo, Loeschen), faengt
+      // die Messung von vorne an statt Marker im Leeren stehen zu lassen.
+      if (messen.punkte.some(function (p) { return !messWeltPunkt(p); })) {
+        messen.punkte = [];
+        if (callbacks.beiMessenReset) callbacks.beiMessenReset();
+      }
+      var a = setzeMarker(messen.marker[0], messen.punkte[0] || null);
+      var b = setzeMarker(messen.marker[1], messen.punkte[1] || null);
+      setzeMarker(messen.markerHover, messen.hover);
+      messen.linie.visible = !!(a && b);
+      if (a && b) {
+        var arr = messen.linie.geometry.attributes.position;
+        arr.setXYZ(0, a.x, a.y, a.z);
+        arr.setXYZ(1, b.x, b.y, b.z);
+        arr.needsUpdate = true;
+      }
+    }
+
+    function klickMessen() {
+      if (!messen.hover) return;   // Klick ins Leere: Modus bleibt aktiv
+      if (messen.punkte.length === 1 && messen.hover.id !== messen.punkte[0].id) {
+        if (callbacks.beiMessenMeldung) {
+          callbacks.beiMessenMeldung('Beide Punkte müssen auf demselben Objekt liegen.');
+        }
+        return;
+      }
+      if (messen.punkte.length >= 2) {
+        // Dritter Klick beginnt eine neue Messung
+        messen.punkte = [];
+        if (callbacks.beiMessenReset) callbacks.beiMessenReset();
+      }
+      if (messen.punkte.length === 1 &&
+          window.KlotzwerkMessen.distanz(messen.punkte[0].lokal, messen.hover.lokal) < 1e-9) {
+        return;   // selber Eckpunkt zweimal: ignorieren
+      }
+      messen.punkte.push(messen.hover);
+      if (messen.punkte.length === 2 && callbacks.beiMessung) {
+        callbacks.beiMessung(messen.punkte[0].id, messungDistanz());
+      }
+    }
+
+    // Hover im Massstab-Modus: Marker snappt auf den naechsten Eckpunkt des
+    // getroffenen Dreiecks.
+    renderer.domElement.addEventListener('pointermove', function (e) {
+      if (!messen) return;
+      var r = renderer.domElement.getBoundingClientRect();
+      zeigt.x = ((e.clientX - r.left) / r.width) * 2 - 1;
+      zeigt.y = -((e.clientY - r.top) / r.height) * 2 + 1;
+      ray.setFromCamera(zeigt, kamera);
+      var liste = Object.keys(vp.meshes).map(function (id) { return vp.meshes[id]; })
+        .filter(function (m) { return m.visible; });
+      var treffer = ray.intersectObjects(liste, false);
+      messen.hover = null;
+      if (treffer.length) {
+        var mesh = treffer[0].object;
+        var lokalTreffer = mesh.worldToLocal(treffer[0].point.clone());
+        var lokal = window.KlotzwerkMessen.naechsterVertex(
+          mesh.geometry.attributes.position.array, mesh.geometry.index.array,
+          treffer[0].faceIndex, [lokalTreffer.x, lokalTreffer.y, lokalTreffer.z]);
+        messen.hover = { id: mesh.userData.id, lokal: lokal };
+      }
+    });
 
     // Strecken-Vorschau: Original versteckt; die zwei Haelften (Welt-
     // Koordinaten) wandern symmetrisch von der Ebene weg, das Mittelstueck
@@ -1568,6 +1711,7 @@
       requestAnimationFrame(schleife);
       if (flugAnimation) flugAnimation(performance.now());
       if (schnittZiel) aktualisiereSchnittClipping();
+      if (messen) aktualisiereMessAnzeige();
       orbit.update();
       renderer.render(szene, kamera);
       if (navWuerfel) navWuerfel.sync();
