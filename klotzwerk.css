@@ -89,6 +89,8 @@
 .k3d-dialog-knoepfe { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 .k3d-export-einzel { display: flex; align-items: flex-start; gap: 7px; font-size: 13px; max-width: 340px; margin: 0 0 4px; cursor: pointer; }
 .k3d-export-einzel input { margin: 3px 0 0; }
+/* Import-Knopf als Drop-Ziel hervorheben, waehrend eine Datei darueber schwebt */
+#btn-import.k3d-drop-ziel { outline: 2px dashed #5a8dc8; outline-offset: -2px; background: #eef4fb; }
 
 /* Navigationswuerfel oben links im Viewport (Tinkercad-Stil) */
 .k3d-navwuerfel { position: absolute; top: 10px; left: 10px; z-index: 5; display: flex; flex-direction: column; align-items: center; gap: 6px; }

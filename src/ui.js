@@ -447,10 +447,14 @@
     zeichneAlles();
     zeichnePanel();
 
-    $('btn-import').addEventListener('click', function () { $('datei-import').click(); });
-    $('datei-import').addEventListener('change', function () {
-      var dateien = Array.prototype.slice.call(this.files);
-      this.value = '';
+    function importiereDateiListe(dateien) {
+      if (!dateien.length) return;
+      // Beim Drop kommt jede Endung durch (kein accept-Filter wie im Picker)
+      var unbekannt = dateien.filter(function (f) { return !/\.(stl|3mf|obj|mtl)$/i.test(f.name); });
+      if (unbekannt.length) {
+        setStatus('«' + unbekannt[0].name + '» wird nicht unterstützt — STL, 3MF oder OBJ (+MTL) importieren.', true);
+      }
+      dateien = dateien.filter(function (f) { return /\.(stl|3mf|obj|mtl)$/i.test(f.name); });
       if (!dateien.length) return;
       var mtl = dateien.filter(function (f) { return /\.mtl$/i.test(f.name); });
       var verarbeitet = false;
@@ -464,7 +468,34 @@
       if (!verarbeitet && mtl.length) {
         setStatus('Eine MTL-Datei gehört zu einer OBJ-Datei — wähle beide zusammen aus.', true);
       }
+    }
+
+    $('btn-import').addEventListener('click', function () { $('datei-import').click(); });
+    $('datei-import').addEventListener('change', function () {
+      var dateien = Array.prototype.slice.call(this.files);
+      this.value = '';
+      importiereDateiListe(dateien);
     });
+
+    // Drag & Drop auf den Import-Knopf. Der window-Handler verhindert, dass
+    // ein daneben gelandeter Drop die Seite durch die Datei ersetzt.
+    var importKnopf = $('btn-import');
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      importKnopf.addEventListener(ev, function (e) {
+        e.preventDefault();
+        importKnopf.classList.add('k3d-drop-ziel');
+      });
+    });
+    importKnopf.addEventListener('dragleave', function () {
+      importKnopf.classList.remove('k3d-drop-ziel');
+    });
+    importKnopf.addEventListener('drop', function (e) {
+      e.preventDefault();
+      importKnopf.classList.remove('k3d-drop-ziel');
+      importiereDateiListe(Array.prototype.slice.call(e.dataTransfer.files));
+    });
+    window.addEventListener('dragover', function (e) { e.preventDefault(); });
+    window.addEventListener('drop', function (e) { e.preventDefault(); });
 
     $('btn-projekt-speichern').addEventListener('click', function () {
       if (zustand.dok.objekte.length === 0) { setStatus('Noch nichts zu sichern.', true); return; }
